@@ -22,9 +22,11 @@ cd E:\liuziqi
 node server.js          # 默认 http://localhost:3000
 ```
 
-规则单元测试：
+测试：
 
 ```powershell
+npm test                # 全部测试：计分/锁/结算核心单元测试 + API 端到端冒烟（起真实服务器 + 临时库）
+npm run test:unit       # 仅单元测试（秒级）
 npm run test:rules      # 钳王争霸规则 v2.1 §5.3 全部官方示例
 ```
 
@@ -33,34 +35,48 @@ npm run test:rules      # 钳王争霸规则 v2.1 §5.3 全部官方示例
 - **`SESSION_SECRET`**：未设置时每次启动随机生成（重启即登出）。生产必须设为稳定的强随机值。
 - **脚本代码隔离**：平台运行玩家提交的不可信 JS。每手/每回合设挂钟超时阻断死循环；但 Node `vm` 不是安全边界，生产部署**必须**叠加 OS 级隔离（独立低权限进程/容器、只读文件系统、禁网络出站、令进程无法读取 `SESSION_SECRET` 与数据库文件）。详见 `SECURITY.md`。
 - **邮箱验证**：默认**关闭**（`EMAIL_VERIFICATION` 未设为 `on`）——新注册账号直接视为已验证，历史未验证账号在启动时一次性补齐，正式挑战不再拦截。接入 SMTP 后设环境变量 `EMAIL_VERIFICATION=on` 即恢复真实验证：正式挑战要求邮箱已验证，验证链接经 SMTP 投递（未配置时仅记录在服务端日志、**不可用于生产**）。
-- **数据库**：`sixchess.db`（SQLite WAL）随启动自动建表与增量迁移，已被 `.gitignore` 忽略。
+- **数据库**：`sixchess.db`（SQLite WAL）随启动自动建表与增量迁移，已被 `.gitignore` 忽略。路径可用环境变量 `DB_PATH` 覆盖（默认不变；测试打临时库用）。
+- **P3 数据层迁移**：旧版「按游戏分表」的库在新代码首次启动时**自动一次性迁移**到统一表族（公开 id 原样保留，旧表重命名 `legacy_*` 留底，迁移失败自动回滚且不改库）。生产更新前请先备份 `sixchess.db*` 三个文件再 `git pull` + 重启。
 
 ## 结构
 
 ```
-server.js            # 零依赖 HTTP 服务器：路由、鉴权、频控、计分、两款游戏的全部 API 与 Agent 指南
+server.js            # 平台层 HTTP 服务器：HTTP 基建、账号体系、静态资源、前端共享资产、
+                     # 游戏路由挂载循环（新增游戏无需改动本文件）
 auth.js              # 密码 scrypt 哈希 + 签名 Cookie 会话 + 邮箱验证 token（HMAC）
-db.js                # node:sqlite 持久化：账号 + 两款游戏各自的 Bot/代码版本/对局/段位/反刷分表族
+db.js                # node:sqlite 持久化（P3 统一数据层）：accounts + 统一 players/密钥/版本/battles/
+                     # 哈希对（game_id 区分游戏，公开 id 按游戏独立自增）+ gameStore(gameId) 工厂
+                     # + 旧双表族库的一次性启动迁移（旧表留底 legacy_*）；路径可用 DB_PATH 覆盖
 ratelimit.js         # 内存级接口频控（令牌窗口）
-engine/              # 钳王争霸引擎（规则与模板的唯一权威副本）
-  rules_metered.js   #   规则 + 吃子结算 + 终局裁定（每手实例化思考点计量 makeRules）
-  engine_quota.js    #   对局主循环（黑先 / 自动停手 / 判负 / 单场挂钟上限）
-  templates_factory.js #  四套评估流派 + negamax 搜索（试玩用内置对手）
-  training_bots.js   #   三档训练棋手（牧童/石郎/棋圣），烟雾测试与试玩对手
-  sandbox.js         #   vm 编译 + 每手超时执行玩家代码（注入每手计量实例）
-  smoke.js           #   发布烟雾测试（6 局固定种子）
-  play_session.js    #   试玩对局核心（无状态重放 + 推进）
-  runner.js          #   子进程入口：执行不可信对局/烟雾/试玩（钳王 + 囚徒）
-  execpool.js        #   父进程侧：fork-per-task 调度 + 硬超时杀子进程
-  prisoner/          # 囚徒困境引擎
-    rules.js         #   收益矩阵 + 回合数区间 + 选择归一化
-    engine.js        #   对局引擎（同时出手 / 区间随机回合数 / 对 Bot 隐藏总长度）
-    training_bots.js #   训练囚徒（老好人/冷面人/抛硬币）
-    sandbox.js       #   vm 编译 + 每回合 50ms 超时执行玩家代码
-    smoke.js         #   发布烟雾测试（6 场固定种子）
-public/              # 前端：index.html / style.css / app.js（双游戏主导航 + 各自二级导航）
+platform/            # 平台通用模块（游戏无关）
+  routes_game.js     #   游戏路由工厂：每游戏全套平台通用 API 只实现一份，
+                     #   规范路径（/api/games/<id>/…）+ legacy 别名（旧路径）双注册
+  settle.js          #   正式挑战结算核心：锁 + 锁内重读 + 哈希对计分窗口 + RP 结算（唯一一份；
+                     #   各游戏经 store 回调注入差异——钳王 ELO、战报落库形态等）
+  scoring.js         #   段位分 RP 公式 + 段位标签（所有游戏共用同一套）
+  locks.js           #   per-key 串行锁（结算/发布防并发竞态）
+  microcache.js      #   天梯榜 JSON 微缓存（序列化 body + ETag，TTL 内复用）
+  guide_common.js    #   Agent 指南的平台通用段落（鉴权/段位/反刷分）
+  execpool.js        #   父进程侧：fork-per-task 子进程调度 + 硬超时 + Node 权限模型闸门
+  runner.js          #   子进程入口：按游戏注册表分发任务，执行不可信代码
+games/               # 游戏目录（一款游戏 = 一个目录）
+  registry.js        #   游戏注册表（子进程安全，不触 db；新增游戏在此登记 id）
+  clawclash/         #   钳王争霸
+    index.js         #     manifest：元数据 + 子进程任务(smoke/challenge/play) + 硬超时限额
+    server.js        #     服务端适配：统一数据层 store + 游戏私有表(matches 棋谱)、响应视图、挑战执行、试玩路由
+    guide.js         #     Agent 指南（游戏专属段落 + 平台段落拼装）
+    engine/          #     引擎：rules_core/rules_metered/engine_quota/sandbox/smoke/
+                     #     play_session/templates_factory/training_bots/builtins
+    public/          #     前端插件（P4）：panel.html（子导航+面板+专属弹窗，按 data-slot 注入）
+                     #     + app.js（交互逻辑，与壳共享全局作用域）
+  prisoner/          #   囚徒困境（结构同构：index.js / server.js / guide.js / engine/ / public/）
+public/              # 前端平台壳（P4 插件化）：index.html（骨架 + 共享弹窗）、platform.js（共享工具
+                     # + 登录态 + 选手创建/头像组件 + 插件加载器：按 /api/games 注入面板并加载脚本）、
+                     # style.css（全站样式）；游戏面板与交互逻辑在 games/<id>/public/
 GameDesign/          # 规则与策划文档（.md，唯一来源，不含运行代码）
-test_rules.js        # 钳王争霸规则单元测试（针对 engine/）
+test/                # node --test 测试族（npm test）：
+                     #   scoring/locks/settle 单元测试 + api.e2e 端到端冒烟（起真实服务器 + DB_PATH 临时库）
+test_rules.js        # 钳王争霸规则单元测试（针对 games/clawclash/engine/）
 ```
 
 ## 平台机制（跨游戏通用）
@@ -75,6 +91,12 @@ test_rules.js        # 钳王争霸规则单元测试（针对 engine/）
 - **并发保护**：挑战结算与发布/回滚用 per-key 串行锁串行化，锁内重读最新值，防并发计分覆盖与版本号撞号。
 
 完整 Agent 接口与契约见运行后的 **`/agent-guide`**（钳王）、**`/agent-guide-prisoner`**（囚徒），或站内各游戏的「Agent 指南」页。
+
+## 新增一款游戏
+
+1. 新建 `games/<id>/` 目录：`index.js`（manifest：元数据、子进程任务、限额、指南、前端脚本清单——**不得 require db**，会被 runner 子进程加载）、`server.js`（服务端适配：`db.gameStore('<id>')` 即得全套数据读写，加上视图、挑战执行、专属路由）、`guide.js`、`engine/`、`public/`（前端插件：`panel.html` + `app.js`）。
+2. 在 `games/registry.js` 登记 `<id>`。
+3. 完事。根目录 `server.js`、`platform/`、`db.js`、`public/`（壳）均无需改动：新游戏自动获得全套 API（`/api/games/<id>/…`）、统一数据层（选手/密钥/版本/战报/反刷分，零 schema 工作）、天梯微缓存、结算/并发保护、Agent 指南路由，且前端主导航自动出现该游戏（壳按 `/api/games` 注入面板并加载脚本）。若有超出统一战报核心的数据（如钳王的逐局棋谱），用 `battles.ext/blob` 或经 `db.db` 句柄自建游戏私有表。
 
 ## 文档
 

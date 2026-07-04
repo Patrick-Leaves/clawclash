@@ -4,17 +4,17 @@
 
 ## 一、代码层已实现
 
-- **独立子进程执行**：所有不可信对局（正式挑战 / 烟雾测试 / 试玩）经 `engine/execpool.js` `fork` 到 `engine/runner.js` 子进程执行（fork-per-task），与 Web/DB 主进程隔离：
+- **独立子进程执行**：所有不可信对局（正式挑战 / 烟雾测试 / 试玩）经 `platform/execpool.js` `fork` 到 `platform/runner.js` 子进程执行（fork-per-task，任务按游戏注册表分发到 `games/<id>/`），与 Web/DB 主进程隔离：
   - 子进程 env 经白名单剥离机密（`SESSION_SECRET`、SMTP 等不传入），逃逸后读不到这些机密；
   - 父进程对每个任务设硬超时并 `SIGKILL` 子进程，**主事件循环不被阻塞**（实测：子进程跑死循环烟雾时，主进程其它请求仍毫秒级响应）；
   - 子进程不持有数据库句柄；并发子进程数有上限（超出回 503）。
-- **Node 权限模型（子进程内进程级闸门）**：`execpool.js` 以 `--permission --allow-fs-read=<engine 目录>` fork 子进程。即便 vm 逃逸拿到宿主 realm 的真实 `fs`/`child_process`，越权操作也会在 C++ 层被拒（`ERR_ACCESS_DENIED`）：
-  - **只放行读取 `engine/` 目录**（跑对局所需的本仓库代码，非机密）。app 根目录下的 `ecosystem.config.js`（含 `SESSION_SECRET`）与 `sixchess.db` 都在 `engine/` 之外 → **逃逸后也读不到**（已实测：关闭权限模型时逃逸脚本能读出密钥文件，开启后同样脚本被 `ERR_ACCESS_DENIED` 拦下）；
+- **Node 权限模型（子进程内进程级闸门）**：`execpool.js` 以 `--permission --allow-fs-read=<platform 目录> --allow-fs-read=<games 目录>` fork 子进程。即便 vm 逃逸拿到宿主 realm 的真实 `fs`/`child_process`，越权操作也会在 C++ 层被拒（`ERR_ACCESS_DENIED`）：
+  - **只放行读取 `platform/` 与 `games/` 目录**（runner 入口与各游戏引擎，均为本仓库代码、非机密）。app 根目录下的 `ecosystem.config.js`（含 `SESSION_SECRET`）与 `sixchess.db` 都在放行目录之外 → **逃逸后也读不到**（已实测：关闭权限模型时逃逸脚本能读出密钥文件，开启后同样脚本被 `ERR_ACCESS_DENIED` 拦下）；
   - **禁止一切 fs 写、`child_process`、`worker_threads`、原生插件**（均实测 `ERR_ACCESS_DENIED`）；
   - 兜底开关 `CHILD_PERMISSION=off` 可临时关闭（仅在极端不兼容时用，不建议线上关）；
   - **权限模型不拦网络出站**——网络隔离仍须靠部署侧（见下方第 3 项）。
-- **每手挂钟超时**：`engine/sandbox.js` 通过 vm `timeout` 对每次 `onTurn` 强制超时（`MOVE_TIMEOUT_MS`，数秒级），中断死循环/长耗时 → 判 `runtime` 负。
-- **单场挂钟上限**：`engine/engine_quota.js` 的 `playMatch(maxMatchMs)` 防"每手不超时但整体长拖"的慢速消耗。
+- **每手挂钟超时**：`games/clawclash/engine/sandbox.js` 通过 vm `timeout` 对每次 `onTurn` 强制超时（`MOVE_TIMEOUT_MS`，数秒级），中断死循环/长耗时 → 判 `runtime` 负（囚徒困境同理：每回合 50ms，见 `games/prisoner/engine/sandbox.js`）。
+- **单场挂钟上限**：`games/clawclash/engine/engine_quota.js` 的 `playMatch(maxMatchMs)` 防"每手不超时但整体长拖"的慢速消耗。
 - **思考点计量（每手实例化）**：`makeRules(budget)` 每手一个计量实例，并发对局互不串改；交给脚本的 `Rules` 只含安全 API（**移除了 `_reset` / `_rawApply`**，杜绝脚本自行重置预算或绕过计量）。
 - **收敛逃逸面**：沙箱不再注入宿主内置对象（`Math/JSON/…` 用上下文自带版本），去掉了 `Error.constructor('return process')` 这类最易用的逃逸路径。
 - **接口频控**：`ratelimit.js` 对注册/登录/发布/挑战限速（超限 429）。
@@ -25,7 +25,7 @@
 
 > **Node 的 `vm` 不是安全边界。** 子进程内仍可经宿主对象（`game.rules`、`game.board`、`me.pieces` 等）的原型链触达该子进程的宿主 realm。代码层已把执行关进**独立子进程**并叠加 **Node 权限模型**——逃逸后已读不到机密文件/数据库、不能写盘、不能起子进程/线程（见上）。**但权限模型不拦网络出站**，且深度防御仍建议再叠一层 OS 级隔离。下列按「当前风险」排序，**第 1 项（网络）为上公网前的必做**：
 
-1. **网络出站隔离（必做）**：权限模型不拦 socket，逃逸脚本仍可对外连接（数据外带 / 打内网 / SSRF）。做法——让 runner 子进程以**专用低权限用户**运行，再用 `iptables`/`nftables` 的 owner 匹配丢弃该用户的 OUTPUT（放行本机回环即可）。**降权已由代码支持**：`execpool.js` 读环境变量 `RUNNER_UID`/`RUNNER_GID`（POSIX，Windows 自动跳过）以该用户 fork 子进程；主进程须有 setuid 权限（PM2 以 root 跑即可），且该用户须能读 `engine/` 与 node 可执行文件。配置示例：
+1. **网络出站隔离（必做）**：权限模型不拦 socket，逃逸脚本仍可对外连接（数据外带 / 打内网 / SSRF）。做法——让 runner 子进程以**专用低权限用户**运行，再用 `iptables`/`nftables` 的 owner 匹配丢弃该用户的 OUTPUT（放行本机回环即可）。**降权已由代码支持**：`execpool.js` 读环境变量 `RUNNER_UID`/`RUNNER_GID`（POSIX，Windows 自动跳过）以该用户 fork 子进程；主进程须有 setuid 权限（PM2 以 root 跑即可），且该用户须能读 `platform/`、`games/` 与 node 可执行文件。配置示例：
 
    ```bash
    useradd -r -s /usr/sbin/nologin clawbot           # 建专用无登录用户

@@ -1,7 +1,7 @@
 'use strict';
 // 用规则 v2.1 §5.3 官方示例验证 rawApply 吃子结算
-// （引擎源为 engine/；GameDesign/ 仅保留规则与策划文档）
-const { Rules } = require('./engine/rules_metered');
+// （引擎源为 games/clawclash/engine/；GameDesign/ 仅保留规则与策划文档）
+const { Rules } = require('./games/clawclash/engine/rules_metered');
 
 function emptyBoard() { return Array.from({ length: 4 }, () => Array(4).fill(null)); }
 function put(b, cells, side) { for (const [x, y] of cells) b[x][y] = side; }
