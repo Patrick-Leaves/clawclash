@@ -46,6 +46,13 @@ const BUILTIN_BOTS_JS = [
   'clawclash/engine/training_bots.js', 'clawclash/engine/builtins.js',
   'prisoner/engine/rules.js', 'prisoner/engine/training_bots.js',
 ].map((f) => fs.readFileSync(path.join(__dirname, 'games', f), 'utf8')).join('\n;\n');
+// 象棋暗战专属打包（独立路由，不并入上面的共享包，避免钳王/囚徒白白多下发一份用不到的代码）：
+// 规则核心 + 对局引擎 + 训练棋手 + 内置对手查找，供试玩「训练棋手对战 / 双人同屏」在浏览器本地
+// 直接推演（零网络，与服务器同一套规则源码，杜绝前后端判定漂移）；玩家上传脚本仍必须服务器沙箱。
+const DARKCHESS_BOTS_JS = [
+  'darkchess/engine/rules_core.js', 'darkchess/engine/engine.js',
+  'darkchess/engine/training_bots.js', 'darkchess/engine/builtins.js',
+].map((f) => fs.readFileSync(path.join(__dirname, 'games', f), 'utf8')).join('\n;\n');
 
 // ---- HTTP 工具 ----
 function sendJson(res, code, obj, extraHeaders) {
@@ -350,6 +357,10 @@ route('GET', '/game-rules.js', (req, res) => {
 // 杜绝旧脚本与服务器规则漂移。玩家上传脚本(不可信)绝不下发，仍由服务器沙箱执行。
 route('GET', '/builtin-bots.js', (req, res) => {
   sendCached(req, res, BUILTIN_BOTS_JS, 'text/javascript; charset=utf-8', 'no-cache');
+});
+// 象棋暗战专属打包（同上：no-cache 协商缓存，改动即时生效，杜绝旧脚本与服务器规则漂移）
+route('GET', '/darkchess-bots.js', (req, res) => {
+  sendCached(req, res, DARKCHESS_BOTS_JS, 'text/javascript; charset=utf-8', 'no-cache');
 });
 
 // 游戏清单（P4 前端插件化）：前端壳按此动态生成主导航、注入各游戏面板并按序加载脚本

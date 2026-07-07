@@ -6,7 +6,7 @@
 //
 // 新增一款游戏 = 新建 games/<id>/ 目录（index.js manifest + server.js 服务端适配 + engine/ + guide.js），
 // 然后在下面登记 id。平台代码（platform/、server.js）无需改动。
-const ids = ['clawclash', 'prisoner'];
+const ids = ['clawclash', 'prisoner', 'darkchess'];
 
 const manifests = {};
 for (const id of ids) manifests[id] = require('./' + id);
