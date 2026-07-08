@@ -326,6 +326,23 @@ test('API 端到端冒烟（真实 server + 临时库）', { timeout: 480000 }, 
     assert.ok((await g.text()).includes('Agent 指南'));
   });
 
+  await t.test('频控按真实客户端分桶：回环直连信任 X-Forwarded-For 最后一跳', async () => {
+    // 登录频控 10 次/5 分钟（server.js）。用不存在的邮箱：不触发 scrypt，稳定 401。
+    // e2e 直连 127.0.0.1（回环）→ clientIp() 应采信 XFF 最后一跳作为频控 key。
+    const hit = async (xff) => {
+      const r = await fetch(B + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': xff },
+        body: JSON.stringify({ email: 'nobody@test.dev', password: 'password' }),
+      });
+      return r.status;
+    };
+    for (let i = 0; i < 10; i++) assert.equal(await hit('203.0.113.7'), 401, `第 ${i + 1} 次应在限额内`);
+    assert.equal(await hit('203.0.113.7'), 429, '同一 XFF 客户端超限应 429');
+    assert.equal(await hit('9.9.9.9, 203.0.113.7'), 429, '多跳 XFF 只认最后一跳（伪造前缀不换桶）');
+    assert.equal(await hit('198.51.100.9'), 401, '不同 XFF 客户端应有独立频控桶');
+  });
+
   await t.test('天梯榜与指南', async () => {
     const lb = await api(B, 'GET', '/api/leaderboard');
     assert.equal(lb.json.leaderboard.length, 3);

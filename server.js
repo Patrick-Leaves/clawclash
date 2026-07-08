@@ -135,8 +135,17 @@ function maskKey(key) {
 }
 
 // ---- 频控 / 客户端标识 ----
+// 生产经同机反代（Nginx → 127.0.0.1:3000）时直连地址恒为回环，频控会把全站塌缩成一个桶。
+// 仅当直连来自本机回环（即可信反代）时才采用 X-Forwarded-For，且只取最后一跳——
+// 该条目由反代追加、不可伪造；前面的条目均可由客户端自带，绝不采信。
+// 公网直连（非回环）时忽略该头，防伪造绕过频控。反代未配 XFF 时自然退回直连地址，行为同旧版。
 function clientIp(req) {
-  return (req.socket && req.socket.remoteAddress) || 'unknown';
+  const direct = (req.socket && req.socket.remoteAddress) || 'unknown';
+  if (/^(?:127\.|::1$|::ffff:127\.)/.test(direct)) {
+    const lastHop = String(req.headers['x-forwarded-for'] || '').split(',').pop().trim();
+    if (lastHop) return lastHop;
+  }
+  return direct;
 }
 // 命中频控则回 429 并返回 true（调用方应直接 return）
 function rateLimited(res, gate) {

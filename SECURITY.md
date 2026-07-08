@@ -44,6 +44,6 @@
 - **`SESSION_SECRET`**：务必设为稳定强随机值（未设则每次启动随机、重启即登出）。
 - **邮箱投递**：接入 SMTP 真正投递验证链接；**生产勿**把验证链接随接口响应回传前端（当前仅非生产环境为演示而回传，见 `server.js` 的 `sendVerificationEmail`）。
 - **棋手密钥**：当前 `api_keys.key_plain` 明文留存以支持站内展示掩码与一键 Prompt（demo 取舍）。更高安全要求下应改为只存哈希、明文仅创建/轮换时一次性返回。
-- **反向代理**：若置于代理后，`clientIp()` 取的是直连地址；需改为信任经校验的 `X-Forwarded-For`，否则频控按代理 IP 聚合。
+- **反向代理**：`clientIp()` 仅在直连来自本机回环（即同机反代）时采用 `X-Forwarded-For` 的**最后一跳**（由反代追加的真实客户端地址；前面的条目可被客户端伪造，不予采信），公网直连时忽略该头以防伪造绕过频控。反代须配置 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，未配置时退回按直连地址聚合（生产同机反代下即所有用户共享频控桶，务必配置）。
 - **HTTPS**：生产应在代理层启用 TLS，并给会话 Cookie 增加 `Secure`。
 - **多实例**：`ratelimit.js` 为单进程内存实现；多实例需换共享存储（如 Redis）。
