@@ -20,22 +20,12 @@ const DQ_REASON_LABEL = {
 // 单场结果标签 RES_LABEL / RES_CLS 来自壳（/platform.js）
 
 // ============================================================
-// 二级导航：试玩 / 天梯榜 / 我的棋手 / Agent 指南（含登录守卫）
+// 二级导航：试玩 / 天梯榜 / 我的棋手 / Agent 指南（含登录守卫）—— 壳的 makeTabs 共享组件
 // ============================================================
-function showDqTab(name) {
-  Platform.activateGame('darkchess');
-  document.querySelectorAll('.tab[data-dqtab]').forEach((b) => b.classList.toggle('active', b.dataset.dqtab === name));
-  document.querySelectorAll('.dqtab-panel').forEach((p) => p.classList.remove('active'));
-  const panel = $('dqtab-' + name); if (panel) panel.classList.add('active');
-  if (name === 'dqleaderboard') loadDqLeaderboard();
-  if (name === 'dqmybot') renderMyDarkchess();
-}
-document.querySelectorAll('.tab[data-dqtab]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const name = btn.dataset.dqtab;
-    if (name === 'dqmybot' && !(ME && ME.account)) { openAuth('register'); return; }
-    showDqTab(name);
-  });
+const { show: showDqTab } = makeTabs({
+  gid: 'darkchess', attr: 'dqtab', panelClass: 'dqtab-panel', panelPrefix: 'dqtab-',
+  onTab: { dqleaderboard: loadDqLeaderboard, dqmybot: renderMyDarkchess },
+  authTabs: ['dqmybot'],
 });
 document.querySelectorAll('[data-dqplaymode]').forEach((btn) => btn.addEventListener('click', () => {
   const m = btn.dataset.dqplaymode;
@@ -160,26 +150,8 @@ async function showDqDetail() {
       <div style="margin-left:auto"><button class="mini" id="dqEditAvatarBtn">更换头像</button></div>
     </div>
     <div class="detail-grid">
-      <div class="card">
-        <h3>概览</h3>
-        <div class="ov-row"><span>段位</span><b>${esc(b.rank)}</b></div>
-        <div class="ov-row"><span>段位分</span><b>${b.rp}</b></div>
-        <div class="ov-row"><span>当前排名</span><b>#${b.rankPosition || '—'}</b></div>
-        <div class="ov-row"><span>胜率</span><b>${b.winRate == null ? '—' : b.winRate + '%'}</b></div>
-        <div class="ov-row"><span>战绩</span><b>${b.wins}-${b.losses}-${b.draws}</b></div>
-        <div class="ov-row"><span>当前版本</span><b>v${b.currentVersion}</b></div>
-        <div class="ov-row"><span>状态</span>${empty ? '<span class="chip empty">待提交脚本</span>' : '<span class="chip active">可对战</span>'}</div>
-      </div>
-      <div class="card">
-        <h3>Agent 接入</h3>
-        <p class="muted" style="margin-top:0">用「Agent 指南 + 棋手密钥」让你的 Agent 阅读规则、编写并提交这名棋手的脚本。</p>
-        <div class="access-row"><span class="lbl">棋手密钥</span><span class="val">${esc(b.maskedKey)}</span></div>
-        <div class="access-row"><span class="lbl">Agent 指南</span><span class="val"><a href="/agent-guide-darkchess" target="_blank">/agent-guide-darkchess</a></span></div>
-        <div class="access-actions">
-          <button class="primary" id="dqCopyPromptBtn">📋 一键复制 Agent Prompt</button>
-          <button class="secondary" id="dqRotateKeyBtn">轮换密钥</button>
-        </div>
-      </div>
+      ${overviewCardHtml(b)}
+      ${accessCardHtml({ noun: '棋手', guidePath: '/agent-guide-darkchess', maskedKey: b.maskedKey })}
     </div>
     <div class="subtabs">
       <button class="subtab active" data-dqsub="versions">版本</button>
@@ -188,15 +160,7 @@ async function showDqDetail() {
     <div id="dqSubBody"></div>`;
 
   $('dqEditAvatarBtn').addEventListener('click', () => openDarkchessAvatarEditor(b.avatar));
-  $('dqCopyPromptBtn').addEventListener('click', async () => {
-    const p = await apiFetch('GET', '/api/games/darkchess/me/prompt');
-    if (!p.ok) return toast(p.error || '获取失败');
-    copyText(p.prompt, '复制成功，粘贴并发送给你的 Agent 即可。');
-  });
-  $('dqRotateKeyBtn').addEventListener('click', () => popup({ icon: '🔑', title: '轮换密钥？', text: '旧密钥会立即失效，需重新复制 Prompt 给 Agent。', actions: [
-    { label: '确认轮换', primary: true, onClick: async () => { const r2 = await apiFetch('POST', '/api/games/darkchess/me/rotate-key'); if (r2.ok) { toast('密钥已轮换'); showDqDetail(); } else toast(r2.error || '失败'); } },
-    { label: '取消' },
-  ] }));
+  bindAccessCard(box, { promptUrl: '/api/games/darkchess/me/prompt', rotateUrl: '/api/games/darkchess/me/rotate-key', onRotated: showDqDetail });
   box.querySelectorAll('[data-dqsub]').forEach((s) => s.addEventListener('click', () => {
     box.querySelectorAll('[data-dqsub]').forEach((x) => x.classList.toggle('active', x === s));
     s.dataset.dqsub === 'versions' ? loadDqVersions() : loadDqMyMatches();
@@ -406,15 +370,7 @@ async function showDqPublic(id) {
       <div style="margin-left:auto"><button class="mini" id="dqBackToLb">← 返回天梯榜</button></div>
     </div>
     <div class="detail-grid">
-      <div class="card">
-        <h3>概览</h3>
-        <div class="ov-row"><span>段位</span><b>${esc(b.rank)}</b></div>
-        <div class="ov-row"><span>段位分</span><b>${b.rp}</b></div>
-        <div class="ov-row"><span>当前排名</span><b>#${b.rankPosition || '—'}</b></div>
-        <div class="ov-row"><span>胜率</span><b>${b.winRate == null ? '—' : b.winRate + '%'}</b></div>
-        <div class="ov-row"><span>战绩</span><b>${b.wins}-${b.losses}-${b.draws}</b></div>
-        <div class="ov-row"><span>当前版本</span><b>v${b.currentVersion}</b></div>
-      </div>
+      ${overviewCardHtml(b, { showStatus: false })}
       <div class="card">
         <h3>最近对战（${battles.length}）</h3>
         <div id="dqPubMatches">${battles.length ? '' : '<div class="muted-center">还没有正式对战记录。</div>'}</div>

@@ -185,6 +185,85 @@ function showGame(gid) {
 }
 
 // ============================================================
+// 二级 tab 控制器（平台通用组件）
+// 各游戏子导航结构一致，仅 DOM 属性名 / 面板 class / 面板 id 前缀 / 各 tab 加载回调 /
+// 登录守卫 tab 不同。DOM 属性名仍按游戏区分（IIFE 只隔离 JS，DOM 全站共享须防误伤）。
+//   makeTabs(cfg) → { show(name) }，并绑定子导航按钮点击（含登录守卫）。
+//   cfg = { gid, attr, panelClass, panelPrefix, onTab: { <tab>: fn }, authTabs: [<tab>] }
+//     attr        子导航按钮/面板的 data 属性名（'tab'|'ptab'|'dqtab'），HTML 中为 data-<attr>
+//     panelClass  面板容器 class（'tab-panel'|'ptab-panel'|'dqtab-panel'）
+//     panelPrefix 面板 id 前缀（配 tab 名拼出面板 id，如 'tab-'+name）
+//     onTab       进入某 tab 时的加载回调（如 leaderboard→loadLeaderboard）
+//     authTabs    需登录才能进入的 tab（未登录点击 → 弹注册）
+// 说明：onTab 的值多为文件后段声明的函数——函数声明会提升，故在此传引用安全。
+// ============================================================
+function makeTabs({ gid, attr, panelClass, panelPrefix, onTab = {}, authTabs = [] }) {
+  function show(name) {
+    Platform.activateGame(gid); // 外部跳转（如登录后进「我的」）时确保本游戏面板可见
+    document.querySelectorAll(`.tab[data-${attr}]`).forEach((b) => b.classList.toggle('active', b.dataset[attr] === name));
+    document.querySelectorAll('.' + panelClass).forEach((p) => p.classList.remove('active'));
+    const panel = $(panelPrefix + name); if (panel) panel.classList.add('active');
+    if (onTab[name]) onTab[name]();
+  }
+  document.querySelectorAll(`.tab[data-${attr}]`).forEach((btn) => btn.addEventListener('click', () => {
+    const name = btn.dataset[attr];
+    if (authTabs.includes(name) && !(ME && ME.account)) { openAuth('register'); return; }
+    show(name);
+  }));
+  return { show };
+}
+
+// ============================================================
+// 详情页卡片（平台通用组件）
+// 三款游戏详情页的「概览卡」「Agent 接入卡」结构一致，仅名词/指南路径/接口前缀不同。
+// 字段来自 routes_game.js#playerOverview（三款同名：rank/rp/rankPosition/winRate/
+// wins/losses/draws/currentVersion/status）。
+// ============================================================
+// 概览卡：showStatus=true 用于「我的」详情（含状态行），false 用于公开页（无状态行）。
+function overviewCardHtml(p, { showStatus = true } = {}) {
+  const empty = p.status === 'empty';
+  return `<div class="card">
+    <h3>概览</h3>
+    <div class="ov-row"><span>段位</span><b>${esc(p.rank)}</b></div>
+    <div class="ov-row"><span>段位分</span><b>${p.rp}</b></div>
+    <div class="ov-row"><span>当前排名</span><b>#${p.rankPosition || '—'}</b></div>
+    <div class="ov-row"><span>胜率</span><b>${p.winRate == null ? '—' : p.winRate + '%'}</b></div>
+    <div class="ov-row"><span>战绩</span><b>${p.wins}-${p.losses}-${p.draws}</b></div>
+    <div class="ov-row"><span>当前版本</span><b>v${p.currentVersion}${empty ? '（空脚本）' : ''}</b></div>
+    ${showStatus ? `<div class="ov-row"><span>状态</span>${empty ? '<span class="chip empty">待提交脚本</span>' : '<span class="chip active">可对战</span>'}</div>` : ''}
+  </div>`;
+}
+// Agent 接入卡：HTML 与绑定分离。按 root 内 data-attr 绑定（非全局 id，防隐藏面板同 id 撞名）。
+//   accessCardHtml({ noun, guidePath, maskedKey })
+//   bindAccessCard(root, { promptUrl, rotateUrl, onRotated })
+function accessCardHtml({ noun, guidePath, maskedKey }) {
+  return `<div class="card">
+    <h3>Agent 接入</h3>
+    <p class="muted" style="margin-top:0">用「Agent 指南 + ${esc(noun)}密钥」让你的 Agent 阅读规则、编写并提交这名${esc(noun)}的脚本。</p>
+    <div class="access-row"><span class="lbl">${esc(noun)}密钥</span><span class="val">${esc(maskedKey)}</span></div>
+    <div class="access-row"><span class="lbl">Agent 指南</span><span class="val"><a href="${esc(guidePath)}" target="_blank">${esc(guidePath)}</a></span></div>
+    <div class="access-actions">
+      <button class="primary" data-copy-prompt>📋 一键复制 Agent Prompt</button>
+      <button class="secondary" data-rotate-key>轮换密钥</button>
+    </div>
+  </div>`;
+}
+function bindAccessCard(root, { promptUrl, rotateUrl, onRotated }) {
+  root.querySelector('[data-copy-prompt]')?.addEventListener('click', async () => {
+    const p = await apiFetch('GET', promptUrl);
+    if (!p.ok) return toast(p.error || '获取失败');
+    copyText(p.prompt, '复制成功，粘贴并发送给你的 Agent 即可。');
+  });
+  root.querySelector('[data-rotate-key]')?.addEventListener('click', () => popup({
+    icon: '🔑', title: '轮换密钥？', text: '旧密钥会立即失效，需重新复制 Prompt 给 Agent。',
+    actions: [
+      { label: '确认轮换', primary: true, onClick: async () => { const r = await apiFetch('POST', rotateUrl); if (r.ok) { toast('密钥已轮换'); onRotated && onRotated(); } else toast(r.error || '失败'); } },
+      { label: '取消' },
+    ],
+  }));
+}
+
+// ============================================================
 // 登录态
 // ============================================================
 async function refreshMe() {

@@ -109,7 +109,9 @@ test('API 端到端冒烟（真实 server + 临时库）', { timeout: 480000 }, 
     }
     const me = await api(B, 'GET', '/api/me', { cookie: accts[0].cookie });
     assert.equal(me.json.account.nickname, '艾丽丝');
-    assert.equal(me.json.hasBot, false);
+    // /api/me 已收敛为账号-only；「是否已建棋手」改由钳王自己的 /me 端点判定（未建回 404）
+    const botMe = await api(B, 'GET', '/api/bot/me', { cookie: accts[0].cookie });
+    assert.equal(botMe.status, 404, '尚未建棋手时钳王 /me 应 404');
   });
 
   await t.test('建棋手 ×3 + 唯一性约束 + 取密钥', async () => {

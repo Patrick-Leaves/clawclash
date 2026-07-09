@@ -213,9 +213,11 @@ test('P3 迁移：旧双表族库 → 统一表族，数据经 API 全量验证'
     assert.equal(login.status, 200, JSON.stringify(login.json));
     cookieA = login.cookie;
     const me = await api(srv.base, 'GET', '/api/me', { cookie: cookieA });
-    assert.equal(me.json.hasBot, true);
-    assert.equal(me.json.bot.id, 1, '公开 botId 必须原样保留');
-    assert.equal(me.json.bot.rp, 275);
+    assert.equal(me.json.account.nickname != null, true);
+    // /api/me 已收敛为账号-only；钳王 bot 资产改由钳王自己的 /me 端点返回
+    const botMe = await api(srv.base, 'GET', '/api/bot/me', { cookie: cookieA });
+    assert.equal(botMe.json.bot.id, 1, '公开 botId 必须原样保留');
+    assert.equal(botMe.json.bot.rp, 275);
   });
 
   await t.test('天梯榜：两款游戏的分数/战绩/排序原样', async () => {

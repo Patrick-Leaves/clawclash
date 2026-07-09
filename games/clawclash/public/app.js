@@ -13,23 +13,23 @@ const REASON_LABEL = { eliminated:'≤1子判负', material:'20手子力裁定',
 function initialBoard() { return GameRules.initBoard(); }
 
 // ============================================================
-// 二级导航：试玩 / 天梯榜 / 我的棋手 / Agent 指南（含登录守卫）
+// 二级导航：试玩 / 天梯榜 / 我的棋手 / Agent 指南（含登录守卫）—— 壳的 makeTabs 共享组件
 // ============================================================
-function showTab(name) {
-  Platform.activateGame('clawclash'); // 外部跳转（如登录后进「我的棋手」）时确保本游戏面板可见
-  document.querySelectorAll('.tab[data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
-  document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
-  const panel = $('tab-' + name); if (panel) panel.classList.add('active');
-  if (name === 'leaderboard') loadLeaderboard();
-  if (name === 'mybot') renderMyBot();
-}
-document.querySelectorAll('.tab[data-tab]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const name = btn.dataset.tab;
-    if (name === 'mybot' && !(ME && ME.account)) { openAuth('register'); return; }
-    showTab(name);
-  });
+const { show: showTab } = makeTabs({
+  gid: 'clawclash', attr: 'tab', panelClass: 'tab-panel', panelPrefix: 'tab-',
+  onTab: { leaderboard: loadLeaderboard, mybot: renderMyBot },
+  authTabs: ['mybot'],
 });
+
+// 我的棋手 id 缓存：undefined=未知（需拉取），null=无棋手，number=有。登录态变化时失效（onAuthChange）。
+let MY_BOT_ID;
+async function ensureMyBotId() {
+  if (MY_BOT_ID !== undefined) return MY_BOT_ID;
+  if (!(ME && ME.account)) { MY_BOT_ID = null; return null; }
+  const r = await apiFetch('GET', '/api/bot/me');
+  MY_BOT_ID = (r.ok && r.bot) ? r.bot.id : null;
+  return MY_BOT_ID;
+}
 
 // ============================================================
 // 创建棋手 / 更换头像：复用壳的通用选手创建组件（文案 + 接口 + 回调按游戏注入）
@@ -37,11 +37,10 @@ document.querySelectorAll('.tab[data-tab]').forEach((btn) => {
 const CC_PLAYER_CFG = {
   noun: '棋手', createTitle: '创建棋手', createLabel: '创建棋手', nameLabel: '棋手名称', placeholder: '例如：落叶',
   urls: { create: '/api/bot/create', nameCheck: '/api/bot/name-check', preset: '/api/bot/me/avatar/preset', upload: '/api/bot/me/avatar' },
-  async onCreated() { await refreshMe(); showDetail(); toast('棋手已创建'); },
-  async onAvatarUpdated() { await refreshMe(); showDetail(); },
+  onCreated(r) { MY_BOT_ID = r.botId; showDetail(); toast('棋手已创建'); },
+  onAvatarUpdated() { showDetail(); },
 };
 function openCreateBot() { openCreatePlayer(CC_PLAYER_CFG); }
-function openAvatarEditor() { openAvatarEditorShared(CC_PLAYER_CFG, ME && ME.bot && ME.bot.avatar); }
 
 // ============================================================
 // 棋子图标：黑色梭子蟹（黑方）/ 红色龙虾（红方）
@@ -80,24 +79,30 @@ function tokenSvg(side) {
   </svg>`;
 }
 function miniIcon(side) { return `<span class="mini-icon">${tokenSvg(side)}</span>`; }
-// 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
-function renderMyBot() {
+// 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）。
+// 自取本游戏 bot（/api/bot/me）——/api/me 已收敛为账号-only，不再回传钳王 bot。
+async function renderMyBot() {
   const box = $('mybotBody');
   if (!(ME && ME.account)) { box.innerHTML = '<div class="empty-hero"><h2>请先登录</h2><p>登录后即可创建并管理你的棋手。</p></div>'; return; }
-  if (!ME.hasBot) {
+  box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const r = await apiFetch('GET', '/api/bot/me');
+  if (r.__status === 404) {
+    MY_BOT_ID = null;
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="createBotOpen">创建棋手 →</button></div>`;
     bindVerifyBanner(box, renderMyBot);
     $('createBotOpen').addEventListener('click', openCreateBot);
     return;
   }
-  const b = ME.bot;
-  const empty = b.currentVersion === 0;
+  if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
+  const b = r.bot;
+  MY_BOT_ID = b.id;
+  const empty = b.status === 'empty';
   box.innerHTML = verifyBannerHtml() + `
     <div class="bot-card">
       <div class="av">${avatarHtml(b.avatar)}</div>
       <div class="grow">
         <h2>${esc(b.name)} ${empty ? '<span class="chip empty">空脚本</span>' : '<span class="chip active">可对战</span>'} <span class="chip ver">v${b.currentVersion}</span></h2>
-        <div class="stat-row"><span>${rankLabel(b.rp)} · 段位分 ${b.rp || 0} · 天梯排名 ${b.rankPosition ? '#' + b.rankPosition : '—'}</span></div>
+        <div class="stat-row"><span>${esc(b.rank)} · 段位分 ${b.rp || 0} · 天梯排名 ${b.rankPosition ? '#' + b.rankPosition : '—'}</span></div>
         ${empty ? '<div class="warn-box" style="margin-top:10px">脚本为空，棋手尚不能对战 —— 进入详情，复制 Prompt 交给 Agent 提交首个版本。</div>' : ''}
       </div>
       <div class="actions"><button class="primary" id="goDetail">详情</button></div>
@@ -122,26 +127,8 @@ async function showDetail() {
       <div style="margin-left:auto"><button class="mini" id="editAvatarBtn">更换头像</button></div>
     </div>
     <div class="detail-grid">
-      <div class="card">
-        <h3>概览</h3>
-        <div class="ov-row"><span>段位</span><b>${esc(b.rank)}</b></div>
-        <div class="ov-row"><span>段位分</span><b>${b.rp}</b></div>
-        <div class="ov-row"><span>当前排名</span><b>#${b.rankPosition || '—'}</b></div>
-        <div class="ov-row"><span>胜率</span><b>${b.winRate == null ? '—' : b.winRate + '%'}</b></div>
-        <div class="ov-row"><span>战绩</span><b>${b.wins}-${b.losses}-${b.draws}</b></div>
-        <div class="ov-row"><span>当前版本</span><b>v${b.currentVersion}</b></div>
-        <div class="ov-row"><span>状态</span>${empty ? '<span class="chip empty">待提交脚本</span>' : '<span class="chip active">可对战</span>'}</div>
-      </div>
-      <div class="card">
-        <h3>Agent 接入</h3>
-        <p class="muted" style="margin-top:0">用「Agent 指南 + 棋手密钥」让你的 Agent 阅读规则、编写并提交这名棋手的脚本。</p>
-        <div class="access-row"><span class="lbl">棋手密钥</span><span class="val">${esc(b.maskedKey)}</span></div>
-        <div class="access-row"><span class="lbl">Agent 指南</span><span class="val"><a href="/agent-guide" target="_blank">/agent-guide</a></span></div>
-        <div class="access-actions">
-          <button class="primary" id="copyPromptBtn">📋 一键复制 Agent Prompt</button>
-          <button class="secondary" id="rotateKeyBtn">轮换密钥</button>
-        </div>
-      </div>
+      ${overviewCardHtml(b)}
+      ${accessCardHtml({ noun: '棋手', guidePath: '/agent-guide', maskedKey: b.maskedKey })}
     </div>
     <div class="subtabs">
       <button class="subtab active" data-sub="versions">版本</button>
@@ -149,16 +136,8 @@ async function showDetail() {
     </div>
     <div id="subBody"></div>`;
 
-  $('editAvatarBtn').addEventListener('click', openAvatarEditor);
-  $('copyPromptBtn').addEventListener('click', async () => {
-    const p = await apiFetch('GET', '/api/bot/me/prompt');
-    if (!p.ok) return toast(p.error || '获取失败');
-    copyText(p.prompt, '复制成功，粘贴并发送给你的 Agent 即可。');
-  });
-  $('rotateKeyBtn').addEventListener('click', () => popup({ icon: '🔑', title: '轮换密钥？', text: '旧密钥会立即失效，需重新复制 Prompt 给 Agent。', actions: [
-    { label: '确认轮换', primary: true, onClick: async () => { const r2 = await apiFetch('POST', '/api/bot/me/rotate-key'); if (r2.ok) { toast('密钥已轮换'); showDetail(); } else toast(r2.error || '失败'); } },
-    { label: '取消' },
-  ] }));
+  $('editAvatarBtn').addEventListener('click', () => openAvatarEditorShared(CC_PLAYER_CFG, b.avatar));
+  bindAccessCard(box, { promptUrl: '/api/bot/me/prompt', rotateUrl: '/api/bot/me/rotate-key', onRotated: showDetail });
   box.querySelectorAll('.subtab').forEach((s) => s.addEventListener('click', () => {
     box.querySelectorAll('.subtab').forEach((x) => x.classList.toggle('active', x === s));
     s.dataset.sub === 'versions' ? loadVersions() : loadMyMatches();
@@ -231,15 +210,7 @@ async function showPublicBot(botId) {
       <div style="margin-left:auto"><button class="mini" id="backToLb">← 返回天梯榜</button></div>
     </div>
     <div class="detail-grid">
-      <div class="card">
-        <h3>概览</h3>
-        <div class="ov-row"><span>段位</span><b>${esc(b.rank)}</b></div>
-        <div class="ov-row"><span>段位分</span><b>${b.rp}</b></div>
-        <div class="ov-row"><span>当前排名</span><b>#${b.rankPosition || '—'}</b></div>
-        <div class="ov-row"><span>胜率</span><b>${b.winRate == null ? '—' : b.winRate + '%'}</b></div>
-        <div class="ov-row"><span>战绩</span><b>${b.wins}-${b.losses}-${b.draws}</b></div>
-        <div class="ov-row"><span>当前版本</span><b>v${b.currentVersion}</b></div>
-      </div>
+      ${overviewCardHtml(b, { showStatus: false })}
       <div class="card">
         <h3>最近对战（${battles.length}）</h3>
         <div id="pubMatches">${battles.length ? '' : '<div class="muted-center">还没有正式对战记录。</div>'}</div>
@@ -263,7 +234,7 @@ async function loadLeaderboard() {
   if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
   renderLeaderboardRows(tbody, data.leaderboard, {
     idField: 'botId', emptyText: '暂无棋手',
-    onDetail: (id) => { (ME && ME.bot && ME.bot.id === id) ? showDetail() : showPublicBot(id); },
+    onDetail: async (id) => { (await ensureMyBotId()) === id ? showDetail() : showPublicBot(id); },
   });
 }
 $('refreshLb').addEventListener('click', loadLeaderboard);
@@ -984,5 +955,6 @@ Platform.registerGame({
   },
   showMine() { showTab('mybot'); },
   defaultView() { showTab('play'); },
+  onAuthChange() { MY_BOT_ID = undefined; }, // 登录态变化 → 我的棋手 id 缓存失效，下次重取
 });
 })();

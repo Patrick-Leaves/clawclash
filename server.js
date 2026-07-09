@@ -334,22 +334,19 @@ route('POST', '/api/account/resend-verification', (req, res) => {
 });
 
 // ============================================================
-// § 当前登录态（含是否已建棋手）
+// § 当前登录态（账号-only，游戏无关）
 // GET /api/me  (需 Cookie)
-// 注：bot 字段为钳王争霸资产（前端首页导航用）；P4 前端插件化时改为按游戏返回。
+// 只返账号信息；各游戏的「我的选手」资产由该游戏自己的 /me 端点按需拉取
+// （前端插件 renderMyBot/renderMyPrisoner/renderMyDarkchess 各自 fetch /api/<game>/me），
+// 本平台层端点不再耦合任何具体游戏。
 // ============================================================
 route('GET', '/api/me', (req, res) => {
   const { account, error } = requireSession(req);
   if (error) return sendJson(res, 401, { ok: false, error });
-  // 钳王资产经该游戏的统一 store 读取（require 走模块缓存，零开销）
-  const ccStore = require('./games/clawclash/server').store;
-  const bot = ccStore.getByAccount(account.id);
   sendJson(res, 200, {
     ok: true,
     account: { id: account.id, nickname: account.nickname, email: account.email },
     emailVerified: !!account.email_verified,
-    hasBot: !!bot,
-    bot: bot ? { id: bot.id, name: bot.name, avatar: bot.avatar, rp: bot.rp, rankPosition: ccStore.rankPosition(bot.id), currentVersion: bot.current_version } : null,
   });
 });
 
