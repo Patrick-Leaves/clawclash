@@ -1,8 +1,11 @@
 'use strict';
 // 囚徒困境 · 前端插件（P4 前端插件化）
 // 面板标记在同目录 panel.html，由平台壳（/platform.js）注入 DOM 后再加载本文件。
-// 与壳共享全局作用域：直接使用 $ / apiFetch / esc / toast / rankLabel / avatarHtml /
-// openModal / closeModal / popup / ME 等壳工具；函数命名延续拆分前的单文件时代，全站唯一。
+// 整个文件包在 IIFE 内：所有声明均为本游戏私有，跨游戏零命名碰撞；对外只经
+// Platform.registerGame 暴露插件对象。壳工具（$ / apiFetch / esc / toast / rankLabel /
+// avatarHtml / openModal / closeModal / popup / ME / RES_LABEL / verifyBannerHtml 等）
+// 是壳脚本的全局词法绑定，闭包内直接可用。
+(() => {
 
 // ============================================================
 // 二级导航：试玩 / 天梯榜 / 我的囚徒 / Agent 指南（含登录守卫）
@@ -65,24 +68,11 @@ async function loadPrisonerLeaderboard() {
   tbody.innerHTML = '<tr><td colspan="7" class="muted-center">加载中…</td></tr>';
   const data = await apiFetch('GET', '/api/leaderboard/prisoner');
   if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
-  if (!data.leaderboard.length) { tbody.innerHTML = '<tr><td colspan="7" class="muted-center">暂无囚徒，快来抢首位</td></tr>'; return; }
-  tbody.innerHTML = data.leaderboard.map((p) => `
-    <tr class="rank-${p.rank}">
-      <td>${p.rank}</td>
-      <td><div class="lb-name"><span style="width:28px;height:28px;border-radius:8px;overflow:hidden;display:inline-block">${avatarHtml(p.avatar)}</span>${esc(p.name)}</div></td>
-      <td>${esc(p.nickname)}</td>
-      <td><span class="chip rank-chip">${esc(p.rankName)}</span></td>
-      <td><b>${p.rp}</b></td>
-      <td>${p.wins}胜 / ${p.losses}负 / ${p.draws}平</td>
-      <td><button class="mini" data-prisoner="${p.prisonerId}">详情</button></td>
-    </tr>`).join('');
-  tbody.querySelectorAll('[data-prisoner]').forEach((b) => b.addEventListener('click', async () => {
-    const id = +b.dataset.prisoner;
-    // 若点的是自己的囚徒 → 直接进「我的囚徒」详情（含 Agent 接入 + 版本记录），而非公开页
-    const mine = await ensureMyPrisonerId();
-    if (mine === id) showPTab('pmybot');
-    else showPublicPrisoner(id);
-  }));
+  renderLeaderboardRows(tbody, data.leaderboard, {
+    idField: 'prisonerId', emptyText: '暂无囚徒，快来抢首位',
+    // 点自己的囚徒 → 进「我的囚徒」详情（含 Agent 接入 + 版本记录），而非公开页
+    onDetail: async (id) => { (await ensureMyPrisonerId()) === id ? showPTab('pmybot') : showPublicPrisoner(id); },
+  });
 }
 $('prefreshLb') && $('prefreshLb').addEventListener('click', loadPrisonerLeaderboard);
 
@@ -99,8 +89,10 @@ async function renderMyPrisoner() {
   const r = await apiFetch('GET', '/api/prisoner/me');
   if (r.__status === 404) {
     MY_PRISONER_ID = null;
-    box.innerHTML = `<div class="empty-hero"><h2>你还没有囚徒</h2><p>创建一名囚徒，选一个头像；策略脚本由你/Agent 稍后提交。</p>
+    // 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
+    box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有囚徒</h2><p>创建一名囚徒，选一个头像；策略脚本由你/Agent 稍后提交。</p>
       <button class="primary" id="pdCreateOpen">创建囚徒 →</button></div>`;
+    bindVerifyBanner(box, renderMyPrisoner);
     $('pdCreateOpen').addEventListener('click', openCreatePrisoner);
     return;
   }
@@ -108,7 +100,7 @@ async function renderMyPrisoner() {
   const p = r.prisoner;
   MY_PRISONER_ID = p.id;
   const empty = p.status === 'empty';
-  box.innerHTML = `
+  box.innerHTML = verifyBannerHtml() + `
     <div class="detail-head">
       <div class="av">${avatarHtml(p.avatar)}</div>
       <div><h2>${esc(p.name)}</h2><div class="muted">当前工作版本：v${p.currentVersion}${empty ? '（空脚本）' : ''}</div></div>
@@ -141,6 +133,7 @@ async function renderMyPrisoner() {
       <button class="subtab" data-psub="matches">对战记录</button>
     </div>
     <div id="psubBody"></div>`;
+  bindVerifyBanner(box, renderMyPrisoner);
   $('editPrisonerAvatarBtn').addEventListener('click', () => openPrisonerAvatarEditor(p.avatar));
   $('pdCopyPromptBtn').addEventListener('click', async () => {
     const pr = await apiFetch('GET', '/api/prisoner/me/prompt');
@@ -162,24 +155,7 @@ async function loadPrisonerVersions() {
   const box = $('psubBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
   const r = await apiFetch('GET', '/api/prisoner/me/versions');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
-  if (!r.versions.length) { box.innerHTML = '<div class="muted-center">还没有版本 —— 复制 Prompt 让 Agent 提交首个脚本。</div>'; return; }
-  box.innerHTML = r.versions.map((v) => `
-    <div class="ver-row">
-      <div class="grow">
-        <b>v${v.version}</b> <span class="chip ${v.smoke_status}">${SMOKE_LABEL[v.smoke_status] || v.smoke_status}</span>
-        <div class="vmeta">${esc(v.notes || '（无说明）')} · 提交者 ${esc(v.submitted_by || '—')} · ${new Date(v.created_at).toLocaleString()}</div>
-      </div>
-      <button class="mini" data-pver="${v.version}">查看脚本</button>
-    </div>`).join('');
-  box.querySelectorAll('[data-pver]').forEach((b) => b.addEventListener('click', () => viewPrisonerCode(+b.dataset.pver)));
-}
-async function viewPrisonerCode(version) {
-  const r = await apiFetch('GET', '/api/prisoner/me/version/' + version);
-  if (!r.ok) return toast(r.error || '读取失败');
-  $('codeTitle').textContent = `脚本 v${version}`;
-  $('codeBody').textContent = r.version.code;
-  $('codeCopy').onclick = () => copyText(r.version.code, '已复制');
-  openModal('codeModal');
+  renderVersionList(box, r.versions, '/api/prisoner/me/version'); // 版本列表 + 查看脚本：壳共享组件
 }
 
 function pdMatchRow(b, mySideIsCh) {
@@ -531,3 +507,4 @@ Platform.registerGame({
   defaultView() { showPTab('pplay'); },
   onAuthChange() { MY_PRISONER_ID = undefined; }, // 登录态变化 → 我的囚徒 id 缓存失效，下次重取
 });
+})();

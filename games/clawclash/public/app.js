@@ -1,8 +1,11 @@
 'use strict';
 // 钳王争霸 · 前端插件（P4 前端插件化）
 // 面板标记在同目录 panel.html，由平台壳（/platform.js）注入 DOM 后再加载本文件。
-// 与壳共享全局作用域：直接使用 $ / apiFetch / esc / toast / rankLabel / avatarHtml /
-// openModal / popup / copyText / ME 等壳工具；函数命名延续拆分前的单文件时代，全站唯一。
+// 整个文件包在 IIFE 内：所有声明均为本游戏私有，跨游戏零命名碰撞；对外只经
+// Platform.registerGame 暴露插件对象。壳工具（$ / apiFetch / esc / toast / rankLabel /
+// avatarHtml / openModal / popup / copyText / ME / RES_LABEL / verifyBannerHtml 等）
+// 是壳脚本的全局词法绑定，闭包内直接可用。
+(() => {
 const SIDE_LABEL = { black: '黑方', red: '红方', draw: '和棋' };
 const REASON_LABEL = { eliminated:'≤1子判负', material:'20手子力裁定', stalemate:'互停子力裁定', draw:'平局', illegal:'非法走法判负', runtime:'思考点超额判负', error:'运行异常判负' };
 
@@ -77,29 +80,13 @@ function tokenSvg(side) {
   </svg>`;
 }
 function miniIcon(side) { return `<span class="mini-icon">${tokenSvg(side)}</span>`; }
-function verifyBannerHtml() {
-  if (!(ME && ME.account) || ME.emailVerified !== false) return '';
-  return `<div class="warn-box verify-banner" style="margin-bottom:14px">
-    ⚠ 邮箱未验证：发起<b>正式挑战</b>需先验证邮箱（${esc(ME.account.email)}）。
-    <button class="mini" id="resendVerifyBtn" style="margin-left:8px">重新发送验证邮件</button>
-  </div>`;
-}
-function bindVerifyBanner() {
-  const btn = $('resendVerifyBtn');
-  if (!btn) return;
-  btn.addEventListener('click', async () => {
-    const r = await apiFetch('POST', '/api/account/resend-verification');
-    if (!r.ok) return toast(r.error || '发送失败');
-    if (r.emailVerified) { toast('邮箱已验证'); await refreshMe(); renderMyBot(); return; }
-    showVerifyLink(r.verifyUrl);
-  });
-}
+// 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
 function renderMyBot() {
   const box = $('mybotBody');
   if (!(ME && ME.account)) { box.innerHTML = '<div class="empty-hero"><h2>请先登录</h2><p>登录后即可创建并管理你的棋手。</p></div>'; return; }
   if (!ME.hasBot) {
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="createBotOpen">创建棋手 →</button></div>`;
-    bindVerifyBanner();
+    bindVerifyBanner(box, renderMyBot);
     $('createBotOpen').addEventListener('click', openCreateBot);
     return;
   }
@@ -115,7 +102,7 @@ function renderMyBot() {
       </div>
       <div class="actions"><button class="primary" id="goDetail">详情</button></div>
     </div>`;
-  bindVerifyBanner();
+  bindVerifyBanner(box, renderMyBot);
   $('goDetail').addEventListener('click', () => showDetail());
 }
 // ============================================================
@@ -183,28 +170,9 @@ async function loadVersions() {
   const box = $('subBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
   const r = await apiFetch('GET', '/api/bot/me/versions');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
-  if (!r.versions.length) { box.innerHTML = '<div class="muted-center">还没有版本 —— 复制 Prompt 让 Agent 提交首个脚本。</div>'; return; }
-  box.innerHTML = r.versions.map((v) => `
-    <div class="ver-row">
-      <div class="grow">
-        <b>v${v.version}</b> <span class="chip ${v.smoke_status}">${SMOKE_LABEL[v.smoke_status] || v.smoke_status}</span>
-        <div class="vmeta">${esc(v.notes || '（无说明）')} · 提交者 ${esc(v.submitted_by || '—')} · ${new Date(v.created_at).toLocaleString()}</div>
-      </div>
-      <button class="mini" data-ver="${v.version}">查看脚本</button>
-    </div>`).join('');
-  box.querySelectorAll('[data-ver]').forEach((b) => b.addEventListener('click', () => viewCode(+b.dataset.ver)));
+  renderVersionList(box, r.versions, '/api/bot/me/version'); // 版本列表 + 查看脚本：壳共享组件
 }
-async function viewCode(version) {
-  const r = await apiFetch('GET', '/api/bot/me/version/' + version);
-  if (!r.ok) return toast(r.error || '读取失败');
-  $('codeTitle').textContent = `脚本 v${version}`;
-  $('codeBody').textContent = r.version.code;
-  $('codeCopy').onclick = () => copyText(r.version.code, '已复制');
-  openModal('codeModal');
-}
-// ---- 对战列表（按场展示，我的详情页 / 公开详情页共用）----
-const RES_LABEL = { win: '胜', loss: '负', draw: '平' };
-const RES_CLS = { win: 'passed', loss: 'failed', draw: 'pending' };
+// ---- 对战列表（按场展示，我的详情页 / 公开详情页共用；RES_LABEL / RES_CLS 来自壳）----
 function battleCardHtml(b) {
   const rp = b.scored === 0
     ? '<span class="rp-delta practice">练习赛·不计分</span>'
@@ -291,27 +259,12 @@ async function showPublicBot(botId) {
 async function loadLeaderboard() {
   const tbody = $('lbBody');
   tbody.innerHTML = '<tr><td colspan="7" class="muted-center">加载中…</td></tr>';
-  try {
-    const data = await apiFetch('GET', '/api/leaderboard');
-    if (!data.ok) throw new Error(data.error);
-    tbody.innerHTML = data.leaderboard.map((b) => `
-      <tr class="rank-${b.rank}">
-        <td>${b.rank}</td>
-        <td><div class="lb-name"><span style="width:28px;height:28px;border-radius:8px;overflow:hidden;display:inline-block">${avatarHtml(b.avatar)}</span>${esc(b.name)}</div></td>
-        <td>${esc(b.nickname)}</td>
-        <td><span class="chip rank-chip">${esc(b.rankName)}</span></td>
-        <td><b>${b.rp}</b></td>
-        <td>${b.wins}胜 / ${b.losses}负 / ${b.draws}平</td>
-        <td><button class="mini" data-bot="${b.botId}">详情</button></td>
-      </tr>`).join('') || '<tr><td colspan="7" class="muted-center">暂无棋手</td></tr>';
-    tbody.querySelectorAll('[data-bot]').forEach((btn) => btn.addEventListener('click', () => {
-      const id = +btn.dataset.bot;
-      if (ME && ME.bot && ME.bot.id === id) showDetail();
-      else showPublicBot(id);
-    }));
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(e.message)}</td></tr>`;
-  }
+  const data = await apiFetch('GET', '/api/leaderboard');
+  if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
+  renderLeaderboardRows(tbody, data.leaderboard, {
+    idField: 'botId', emptyText: '暂无棋手',
+    onDetail: (id) => { (ME && ME.bot && ME.bot.id === id) ? showDetail() : showPublicBot(id); },
+  });
 }
 $('refreshLb').addEventListener('click', loadLeaderboard);
 
@@ -1032,3 +985,4 @@ Platform.registerGame({
   showMine() { showTab('mybot'); },
   defaultView() { showTab('play'); },
 });
+})();

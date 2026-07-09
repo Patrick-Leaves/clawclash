@@ -5,6 +5,9 @@
 // 新增游戏无需改动本文件与 index.html。
 const $ = (id) => document.getElementById(id);
 const SMOKE_LABEL = { passed: '已通过', failed: '未通过', pending: '测试中' };
+// 单场结果标签 / 结果 chip 配色类（胜/负/平三态，所有游戏通用）
+const RES_LABEL = { win: '胜', loss: '负', draw: '平' };
+const RES_CLS = { win: 'passed', loss: 'failed', draw: 'pending' };
 
 let ME = null; // { account, hasBot, bot } | null
 
@@ -95,6 +98,57 @@ function avatarHtml(avatar) {
     return `<img class="av-img" src="/avatars/${esc(avatar.slice(7))}" alt="头像" />`;
   const n = typeof avatar === 'string' && avatar.startsWith('preset:') ? +avatar.slice(7) : 1;
   return presetSvg(n);
+}
+
+// ============================================================
+// 天梯榜表格（平台通用组件）
+// 三款游戏的榜单行结构完全一致，仅「id 字段名 / 空榜文案 / 详情点击去向」不同。
+// 各游戏自管 fetch / 加载态 / 错误态（差异在此），拿到 rows 后调本函数渲染 + 绑定：
+//   renderLeaderboardRows(tbody, rows, { idField, emptyText, onDetail })
+//   - idField：行里 id 字段名（'botId' | 'prisonerId' | 'darkchessId'）
+//   - onDetail(id)：点「详情」的去向（自己→详情页，他人→公开页，由调用方判定）
+// ============================================================
+function renderLeaderboardRows(tbody, rows, { idField, emptyText = '暂无选手', onDetail }) {
+  tbody.innerHTML = rows.map((r) => `
+    <tr class="rank-${r.rank}">
+      <td>${r.rank}</td>
+      <td><div class="lb-name"><span style="width:28px;height:28px;border-radius:8px;overflow:hidden;display:inline-block">${avatarHtml(r.avatar)}</span>${esc(r.name)}</div></td>
+      <td>${esc(r.nickname)}</td>
+      <td><span class="chip rank-chip">${esc(r.rankName)}</span></td>
+      <td><b>${r.rp}</b></td>
+      <td>${r.wins}胜 / ${r.losses}负 / ${r.draws}平</td>
+      <td><button class="mini" data-lb-detail="${r[idField]}">详情</button></td>
+    </tr>`).join('') || `<tr><td colspan="7" class="muted-center">${esc(emptyText)}</td></tr>`;
+  tbody.querySelectorAll('[data-lb-detail]').forEach((btn) =>
+    btn.addEventListener('click', () => onDetail(+btn.dataset.lbDetail)));
+}
+
+// ============================================================
+// 代码版本列表 + 查看脚本弹窗（平台通用组件）
+// 三款游戏的版本列表结构完全一致，仅「版本接口前缀」不同。
+//   renderVersionList(container, versions, viewBase)：viewBase 如 '/api/bot/me/version'，
+//   点「查看脚本」时 GET `${viewBase}/${version}` 并弹出共享代码弹窗。
+// ============================================================
+async function viewCodeShared(versionUrl) {
+  const r = await apiFetch('GET', versionUrl);
+  if (!r.ok) return toast(r.error || '读取失败');
+  $('codeTitle').textContent = `脚本 v${r.version.version}`;
+  $('codeBody').textContent = r.version.code;
+  $('codeCopy').onclick = () => copyText(r.version.code, '已复制');
+  openModal('codeModal');
+}
+function renderVersionList(container, versions, viewBase) {
+  if (!versions.length) { container.innerHTML = '<div class="muted-center">还没有版本 —— 复制 Prompt 让 Agent 提交首个脚本。</div>'; return; }
+  container.innerHTML = versions.map((v) => `
+    <div class="ver-row">
+      <div class="grow">
+        <b>v${v.version}</b> <span class="chip ${v.smoke_status}">${SMOKE_LABEL[v.smoke_status] || v.smoke_status}</span>
+        <div class="vmeta">${esc(v.notes || '（无说明）')} · 提交者 ${esc(v.submitted_by || '—')} · ${new Date(v.created_at).toLocaleString()}</div>
+      </div>
+      <button class="mini" data-ver-view="${v.version}">查看脚本</button>
+    </div>`).join('');
+  container.querySelectorAll('[data-ver-view]').forEach((b) =>
+    b.addEventListener('click', () => viewCodeShared(`${viewBase}/${b.dataset.verView}`)));
 }
 
 // ============================================================
@@ -225,6 +279,31 @@ function showVerifyLink(verifyUrl) {
   } else {
     toast('验证邮件已发送，请查收邮箱');
   }
+}
+
+// ============================================================
+// 邮箱验证横幅（平台通用组件）
+// 各游戏「我的」页把 verifyBannerHtml() 拼进自己的 innerHTML 开头，随后调
+// bindVerifyBanner(root, refresh) 绑定重发按钮：root = 刚写入的容器（按容器查找，
+// 不用全局 id——多个游戏面板可能同时各有一条横幅）；refresh = 该游戏「我的」页的
+// 重渲染函数（点重发时若发现邮箱其实已验证，刷新登录态后重画本游戏面板）。
+// ============================================================
+function verifyBannerHtml() {
+  if (!(ME && ME.account) || ME.emailVerified !== false) return '';
+  return `<div class="warn-box verify-banner" style="margin-bottom:14px">
+    ⚠ 邮箱未验证：发起<b>正式挑战</b>需先验证邮箱（${esc(ME.account.email)}）。
+    <button class="mini" data-resend-verify style="margin-left:8px">重新发送验证邮件</button>
+  </div>`;
+}
+function bindVerifyBanner(root, refresh) {
+  const btn = root.querySelector('[data-resend-verify]');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const r = await apiFetch('POST', '/api/account/resend-verification');
+    if (!r.ok) return toast(r.error || '发送失败');
+    if (r.emailVerified) { toast('邮箱已验证'); await refreshMe(); refresh && refresh(); return; }
+    showVerifyLink(r.verifyUrl);
+  });
 }
 
 // ============================================================

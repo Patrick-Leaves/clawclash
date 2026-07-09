@@ -1,10 +1,13 @@
 'use strict';
 // 象棋暗战 · 前端插件（P4 前端插件化）
 // 面板标记在同目录 panel.html，由平台壳（/platform.js）注入 DOM 后再加载本文件。
-// 与壳共享全局作用域：直接使用 $ / apiFetch / esc / toast / avatarHtml / openModal / popup /
-// copyText / ME / Platform / openCreatePlayer / openAvatarEditorShared / openAuth 等壳工具。
-// 命名空间隔离：本文件专属的 document 级查询属性一律加 dq 前缀（data-dqtab / .dqtab-panel /
-// data-dqplaymode），避免与 clawclash 的同类未加限定的 document 级选择器互相误伤。
+// 整个文件包在 IIFE 内：所有声明均为本游戏私有，跨游戏零命名碰撞；对外只经
+// Platform.registerGame 暴露插件对象。壳工具（$ / apiFetch / esc / toast / avatarHtml /
+// openModal / popup / copyText / ME / RES_LABEL / verifyBannerHtml 等）是壳脚本的
+// 全局词法绑定，闭包内直接可用。
+// DOM 命名空间：document 级查询属性仍须加 dq 前缀（data-dqtab / .dqtab-panel /
+// data-dqplaymode）——IIFE 只隔离 JS 命名，DOM 是全站共享的，选择器照旧要防误伤。
+(() => {
 const DQ_W = 8, DQ_H = 4;
 const DQ_LABELS = {
   black: { general: '将', advisor: '士', elephant: '象', chariot: '車', horse: '馬', cannon: '炮', soldier: '卒' },
@@ -14,8 +17,7 @@ const DQ_REASON_LABEL = {
   eliminated: '吃光判负', noCapture: '40 回合无吃子 · 价值裁定', stalemate: '双方停一手 · 价值裁定',
   draw: '平局', illegal: '非法动作判负', runtime: '超时/异常判负', error: '运行异常判负',
 };
-const DQ_RES_LABEL = { win: '胜', loss: '负', draw: '平' };
-const DQ_RES_CLS = { win: 'passed', loss: 'failed', draw: 'pending' };
+// 单场结果标签 RES_LABEL / RES_CLS 来自壳（/platform.js）
 
 // ============================================================
 // 二级导航：试玩 / 天梯榜 / 我的棋手 / Agent 指南（含登录守卫）
@@ -110,24 +112,7 @@ async function ensureMyDarkchessId() {
   return MY_DARKCHESS_ID;
 }
 
-function verifyBannerHtml() {
-  if (!(ME && ME.account) || ME.emailVerified !== false) return '';
-  return `<div class="warn-box verify-banner" style="margin-bottom:14px">
-    ⚠ 邮箱未验证：发起<b>正式挑战</b>需先验证邮箱（${esc(ME.account.email)}）。
-    <button class="mini" id="dqResendVerifyBtn" style="margin-left:8px">重新发送验证邮件</button>
-  </div>`;
-}
-function bindVerifyBanner() {
-  const btn = $('dqResendVerifyBtn');
-  if (!btn) return;
-  btn.addEventListener('click', async () => {
-    const r = await apiFetch('POST', '/api/account/resend-verification');
-    if (!r.ok) return toast(r.error || '发送失败');
-    if (r.emailVerified) { toast('邮箱已验证'); await refreshMe(); renderMyDarkchess(); return; }
-    showVerifyLink(r.verifyUrl);
-  });
-}
-
+// 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
 async function renderMyDarkchess() {
   const box = $('dqMybotBody');
   if (!(ME && ME.account)) { box.innerHTML = '<div class="empty-hero"><h2>请先登录</h2><p>登录后即可创建并管理你的棋手。</p></div>'; return; }
@@ -136,7 +121,7 @@ async function renderMyDarkchess() {
   if (r.__status === 404) {
     MY_DARKCHESS_ID = null;
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="dqCreateOpen">创建棋手 →</button></div>`;
-    bindVerifyBanner();
+    bindVerifyBanner(box, renderMyDarkchess);
     $('dqCreateOpen').addEventListener('click', openCreateDarkchess);
     return;
   }
@@ -154,7 +139,7 @@ async function renderMyDarkchess() {
       </div>
       <div class="actions"><button class="primary" id="dqGoDetail">详情</button></div>
     </div>`;
-  bindVerifyBanner();
+  bindVerifyBanner(box, renderMyDarkchess);
   $('dqGoDetail').addEventListener('click', () => showDqDetail());
 }
 
@@ -223,24 +208,7 @@ async function loadDqVersions() {
   const box = $('dqSubBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
   const r = await apiFetch('GET', '/api/games/darkchess/me/versions');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
-  if (!r.versions.length) { box.innerHTML = '<div class="muted-center">还没有版本 —— 复制 Prompt 让 Agent 提交首个脚本。</div>'; return; }
-  box.innerHTML = r.versions.map((v) => `
-    <div class="ver-row">
-      <div class="grow">
-        <b>v${v.version}</b> <span class="chip ${v.smoke_status}">${SMOKE_LABEL[v.smoke_status] || v.smoke_status}</span>
-        <div class="vmeta">${esc(v.notes || '（无说明）')} · 提交者 ${esc(v.submitted_by || '—')} · ${new Date(v.created_at).toLocaleString()}</div>
-      </div>
-      <button class="mini" data-dqver="${v.version}">查看脚本</button>
-    </div>`).join('');
-  box.querySelectorAll('[data-dqver]').forEach((b) => b.addEventListener('click', () => viewDqCode(+b.dataset.dqver)));
-}
-async function viewDqCode(version) {
-  const r = await apiFetch('GET', '/api/games/darkchess/me/version/' + version);
-  if (!r.ok) return toast(r.error || '读取失败');
-  $('codeTitle').textContent = `脚本 v${version}`;
-  $('codeBody').textContent = r.version.code;
-  $('codeCopy').onclick = () => copyText(r.version.code, '已复制');
-  openModal('codeModal');
+  renderVersionList(box, r.versions, '/api/games/darkchess/me/version'); // 版本列表 + 查看脚本：壳共享组件
 }
 
 // ---- 对战列表（按场展示，我的详情页 / 公开详情页共用）----
@@ -251,7 +219,7 @@ function dqBattleCardHtml(b) {
       ? '<span class="rp-delta">RP —</span>'
       : `<span class="rp-delta ${b.rpDelta >= 0 ? 'up' : 'down'}">RP ${b.rpDelta >= 0 ? '+' : ''}${b.rpDelta}</span>`;
   return `<div class="match-row">
-    <span class="chip ${DQ_RES_CLS[b.result]}">${DQ_RES_LABEL[b.result]}</span>
+    <span class="chip ${RES_CLS[b.result]}">${RES_LABEL[b.result]}</span>
     <span class="m-av">${avatarHtml(b.opponentAvatar)}</span>
     <div class="grow">
       <b>vs ${esc(b.opponentName)}</b> ${rp}
@@ -463,27 +431,12 @@ async function showDqPublic(id) {
 async function loadDqLeaderboard() {
   const tbody = $('dqLbBody');
   tbody.innerHTML = '<tr><td colspan="7" class="muted-center">加载中…</td></tr>';
-  try {
-    const data = await apiFetch('GET', '/api/games/darkchess/leaderboard');
-    if (!data.ok) throw new Error(data.error);
-    tbody.innerHTML = data.leaderboard.map((b) => `
-      <tr class="rank-${b.rank}">
-        <td>${b.rank}</td>
-        <td><div class="lb-name"><span style="width:28px;height:28px;border-radius:8px;overflow:hidden;display:inline-block">${avatarHtml(b.avatar)}</span>${esc(b.name)}</div></td>
-        <td>${esc(b.nickname)}</td>
-        <td><span class="chip rank-chip">${esc(b.rankName)}</span></td>
-        <td><b>${b.rp}</b></td>
-        <td>${b.wins}胜 / ${b.losses}负 / ${b.draws}平</td>
-        <td><button class="mini" data-dqid="${b.darkchessId}">详情</button></td>
-      </tr>`).join('') || '<tr><td colspan="7" class="muted-center">暂无棋手</td></tr>';
-    tbody.querySelectorAll('[data-dqid]').forEach((btn) => btn.addEventListener('click', async () => {
-      const id = +btn.dataset.dqid;
-      const mine = await ensureMyDarkchessId();
-      if (mine === id) showDqDetail(); else showDqPublic(id);
-    }));
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(e.message)}</td></tr>`;
-  }
+  const data = await apiFetch('GET', '/api/games/darkchess/leaderboard');
+  if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
+  renderLeaderboardRows(tbody, data.leaderboard, {
+    idField: 'darkchessId', emptyText: '暂无棋手',
+    onDetail: async (id) => { (await ensureMyDarkchessId()) === id ? showDqDetail() : showDqPublic(id); },
+  });
 }
 $('dqRefreshLb').addEventListener('click', loadDqLeaderboard);
 
@@ -826,3 +779,4 @@ Platform.registerGame({
   defaultView() { showDqTab('dqplay'); },
   onAuthChange() { MY_DARKCHESS_ID = undefined; },
 });
+})();
