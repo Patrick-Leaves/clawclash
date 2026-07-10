@@ -1,5 +1,5 @@
 'use strict';
-// 段位分（RP）模型：平台通用，所有游戏共用同一套公式（见 GameDesign/平台系统说明_v1.0.md §四）。
+// 段位分（RP）模型：平台通用，所有游戏共用同一套公式（见 GameDesign/平台系统说明_v1.1.md §四）。
 // 自 server.js 原样迁出，行为不变；test/scoring.test.js 以特征测试钉住全部边界。
 
 const RANK_TIERS = ['青铜', '白银', '黄金', '钻石', '王者'];
