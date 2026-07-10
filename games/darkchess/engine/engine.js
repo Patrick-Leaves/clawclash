@@ -110,7 +110,7 @@ function buildView(matchState, seat) {
     noCaptureCount: matchState.noCaptureCount,
     legalActions: legalActionsForSeat(matchState, seat),
     history: matchState.history,
-    random: matchState.rng,
+    random: matchState.rngOf[seat], // 每座位独立随机流（见 initMatchState）
     rules: {
       legalMoves: core.legalMoves,
       apply: (board, side2, action) => core.applyMove(board, side2, { from: action.from, to: action.to }),
@@ -124,6 +124,9 @@ function buildView(matchState, seat) {
 }
 
 // 新建一局的初始状态：随机开局摆放 + 随机先手座位。
+// rng 仅供引擎内部使用（开局摆放/先手/定序兜底），不暴露给棋手；
+// rngOf 为每座位独立随机流（buildView 的 game.random）——一方多调几次 random()
+// 无法移动对方或引擎的随机序列（排位双方都是用户脚本，共享流构成操纵向量）。
 function initMatchState(seed) {
   const rng = mulberry32(seed);
   const initialBoard = core.initBoard(rng);
@@ -131,6 +134,7 @@ function initMatchState(seed) {
   return {
     board: core.cloneBoard(initialBoard), phase: 'determining', colorOf: {}, pendingFlips: [],
     turnSeat: firstSeat, turnNumber: 1, noCaptureCount: 0, rng, history: [], lastWasPass: false,
+    rngOf: { a: mulberry32((seed ^ 0x5E3DA2B5) >>> 0), b: mulberry32((seed ^ 0x9C7E11D3) >>> 0) },
     initialBoard,
   };
 }

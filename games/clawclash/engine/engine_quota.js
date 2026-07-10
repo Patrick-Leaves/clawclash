@@ -21,11 +21,20 @@ function piecesOf(board, side) {
   return p;
 }
 
+// 派生独立随机源：黑/红各一条，互不串扰——一方多调几次 game.random() 无法移动对方的
+// 随机序列（排位双方都是用户脚本，共享流构成操纵向量）。参照囚徒困境 engine.js 的 deriveRng。
+function deriveRng(seed) {
+  return {
+    black: mulberry32((seed ^ 0x5E3DA2B5) >>> 0),
+    red: mulberry32((seed ^ 0x9C7E11D3) >>> 0),
+  };
+}
+
 // bots = { black: bot, red: bot }
 // maxMatchMs：单场挂钟上限（安全阀，防"每手不超时但整体长拖"的慢速消耗）。
 // 超时则中止，由"该走方"判 runtime 负——正常对局远达不到此值。
 function playMatch(bots, seed, budget, maxMatchMs = 10000) {
-  const rnd = mulberry32(seed);
+  const rng = deriveRng(seed);
   let board = initBoard();
   let side = 'black', turn = 1, ncm = 0, lastPass = false;
   const history = [];
@@ -65,7 +74,7 @@ function playMatch(bots, seed, budget, maxMatchMs = 10000) {
       noCaptureMoves: ncm,
       legalMoves: moves.map((m) => ({ from: m.from.slice(), to: m.to.slice() })),
       history,
-      random: rnd,
+      random: rng[side], // 每座位独立随机流（见 deriveRng）
       rules: makeRules(budget), // 本手计量实例(交给棋手)
     };
 
