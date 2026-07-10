@@ -86,21 +86,11 @@ const DQ_PLAYER_CFG = {
     create: '/api/games/darkchess/create', nameCheck: '/api/games/darkchess/name-check',
     preset: '/api/games/darkchess/me/avatar/preset', upload: '/api/games/darkchess/me/avatar',
   },
-  onCreated(r) { MY_DARKCHESS_ID = r.darkchessId; toast('棋手已创建'); showDqDetail(); },
-  onAvatarUpdated() { showDqDetail(); },
+  async onCreated() { await refreshMe(); toast('棋手已创建'); showDqDetail(); },
+  async onAvatarUpdated() { await refreshMe(); showDqDetail(); },
 };
 function openCreateDarkchess() { openCreatePlayer(DQ_PLAYER_CFG); }
 function openDarkchessAvatarEditor(currentAvatar) { openAvatarEditorShared(DQ_PLAYER_CFG, currentAvatar); }
-
-// 我的棋手 id 缓存：undefined=未知（需拉取），null=无棋手，number=有。登录态变化时失效。
-let MY_DARKCHESS_ID;
-async function ensureMyDarkchessId() {
-  if (MY_DARKCHESS_ID !== undefined) return MY_DARKCHESS_ID;
-  if (!ME || !ME.account) { MY_DARKCHESS_ID = null; return null; }
-  const r = await apiFetch('GET', '/api/games/darkchess/me');
-  MY_DARKCHESS_ID = (r.ok && r.darkchess) ? r.darkchess.id : null;
-  return MY_DARKCHESS_ID;
-}
 
 // 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
 async function renderMyDarkchess() {
@@ -109,7 +99,6 @@ async function renderMyDarkchess() {
   box.innerHTML = '<div class="muted-center">加载中…</div>';
   const r = await apiFetch('GET', '/api/games/darkchess/me');
   if (r.__status === 404) {
-    MY_DARKCHESS_ID = null;
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="dqCreateOpen">创建棋手 →</button></div>`;
     bindVerifyBanner(box, renderMyDarkchess);
     $('dqCreateOpen').addEventListener('click', openCreateDarkchess);
@@ -117,7 +106,6 @@ async function renderMyDarkchess() {
   }
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const b = r.darkchess;
-  MY_DARKCHESS_ID = b.id;
   const empty = b.status === 'empty';
   box.innerHTML = verifyBannerHtml() + `
     <div class="bot-card">
@@ -391,7 +379,7 @@ async function loadDqLeaderboard() {
   if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
   renderLeaderboardRows(tbody, data.leaderboard, {
     idField: 'darkchessId', emptyText: '暂无棋手',
-    onDetail: async (id) => { (await ensureMyDarkchessId()) === id ? showDqDetail() : showDqPublic(id); },
+    onDetail: (id) => { const mine = myPlayer('darkchess'); mine && mine.id === id ? showDqDetail() : showDqPublic(id); },
   });
 }
 $('dqRefreshLb').addEventListener('click', loadDqLeaderboard);
@@ -733,6 +721,5 @@ Platform.registerGame({
   },
   showMine() { showDqTab('dqmybot'); },
   defaultView() { showDqTab('dqplay'); },
-  onAuthChange() { MY_DARKCHESS_ID = undefined; },
 });
 })();

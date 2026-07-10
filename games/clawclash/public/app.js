@@ -21,24 +21,16 @@ const { show: showTab } = makeTabs({
   authTabs: ['mybot'],
 });
 
-// 我的棋手 id 缓存：undefined=未知（需拉取），null=无棋手，number=有。登录态变化时失效（onAuthChange）。
-let MY_BOT_ID;
-async function ensureMyBotId() {
-  if (MY_BOT_ID !== undefined) return MY_BOT_ID;
-  if (!(ME && ME.account)) { MY_BOT_ID = null; return null; }
-  const r = await apiFetch('GET', '/api/bot/me');
-  MY_BOT_ID = (r.ok && r.bot) ? r.bot.id : null;
-  return MY_BOT_ID;
-}
-
 // ============================================================
 // 创建棋手 / 更换头像：复用壳的通用选手创建组件（文案 + 接口 + 回调按游戏注入）
+// 「我是否有棋手/我的棋手 id」直接读壳的 myPlayer('clawclash')（/api/me 通用结构），
+// 建号/换头像后 await refreshMe() 刷新该结构。
 // ============================================================
 const CC_PLAYER_CFG = {
   noun: '棋手', createTitle: '创建棋手', createLabel: '创建棋手', nameLabel: '棋手名称', placeholder: '例如：落叶',
   urls: { create: '/api/bot/create', nameCheck: '/api/bot/name-check', preset: '/api/bot/me/avatar/preset', upload: '/api/bot/me/avatar' },
-  onCreated(r) { MY_BOT_ID = r.botId; showDetail(); toast('棋手已创建'); },
-  onAvatarUpdated() { showDetail(); },
+  async onCreated() { await refreshMe(); showDetail(); toast('棋手已创建'); },
+  async onAvatarUpdated() { await refreshMe(); showDetail(); },
 };
 function openCreateBot() { openCreatePlayer(CC_PLAYER_CFG); }
 
@@ -87,7 +79,6 @@ async function renderMyBot() {
   box.innerHTML = '<div class="muted-center">加载中…</div>';
   const r = await apiFetch('GET', '/api/bot/me');
   if (r.__status === 404) {
-    MY_BOT_ID = null;
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="createBotOpen">创建棋手 →</button></div>`;
     bindVerifyBanner(box, renderMyBot);
     $('createBotOpen').addEventListener('click', openCreateBot);
@@ -95,7 +86,6 @@ async function renderMyBot() {
   }
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const b = r.bot;
-  MY_BOT_ID = b.id;
   const empty = b.status === 'empty';
   box.innerHTML = verifyBannerHtml() + `
     <div class="bot-card">
@@ -234,7 +224,7 @@ async function loadLeaderboard() {
   if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
   renderLeaderboardRows(tbody, data.leaderboard, {
     idField: 'botId', emptyText: '暂无棋手',
-    onDetail: async (id) => { (await ensureMyBotId()) === id ? showDetail() : showPublicBot(id); },
+    onDetail: (id) => { const mine = myPlayer('clawclash'); mine && mine.id === id ? showDetail() : showPublicBot(id); },
   });
 }
 $('refreshLb').addEventListener('click', loadLeaderboard);
@@ -955,6 +945,5 @@ Platform.registerGame({
   },
   showMine() { showTab('mybot'); },
   defaultView() { showTab('play'); },
-  onAuthChange() { MY_BOT_ID = undefined; }, // 登录态变化 → 我的棋手 id 缓存失效，下次重取
 });
 })();

@@ -273,6 +273,9 @@ async function refreshMe() {
   renderAuthState();
   return ME;
 }
+// 当前账号在某游戏的选手概要（/api/me 的 players.<gid>；未登录或未建号 → null）。
+// 建号/换头像后须 await refreshMe() 才会更新——各游戏的 onCreated/onAvatarUpdated 已遵守。
+function myPlayer(gid) { return (ME && ME.players && ME.players[gid]) || null; }
 function renderAuthState() {
   const el = $('authState');
   if (ME && ME.account) {

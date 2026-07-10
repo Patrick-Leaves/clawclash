@@ -214,9 +214,12 @@ test('P3 迁移：旧双表族库 → 统一表族，数据经 API 全量验证'
     cookieA = login.cookie;
     const me = await api(srv.base, 'GET', '/api/me', { cookie: cookieA });
     assert.equal(me.json.account.nickname != null, true);
-    // /api/me 已收敛为账号-only；钳王 bot 资产改由钳王自己的 /me 端点返回
+    // /api/me 通用结构：迁移后的选手概要应出现在 players（公开 id 原样保留）
+    assert.equal(me.json.players.clawclash.id, 1, '公开 botId 必须原样保留');
+    assert.equal(me.json.players.clawclash.rp, 275);
+    // 选手详情仍由钳王自己的 /me 端点返回
     const botMe = await api(srv.base, 'GET', '/api/bot/me', { cookie: cookieA });
-    assert.equal(botMe.json.bot.id, 1, '公开 botId 必须原样保留');
+    assert.equal(botMe.json.bot.id, 1);
     assert.equal(botMe.json.bot.rp, 275);
   });
 

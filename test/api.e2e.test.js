@@ -109,7 +109,12 @@ test('API 端到端冒烟（真实 server + 临时库）', { timeout: 480000 }, 
     }
     const me = await api(B, 'GET', '/api/me', { cookie: accts[0].cookie });
     assert.equal(me.json.account.nickname, '艾丽丝');
-    // /api/me 已收敛为账号-only；「是否已建棋手」改由钳王自己的 /me 端点判定（未建回 404）
+    // /api/me 的通用结构：players 覆盖注册表所有游戏，未建号一律 null（不硬编码具体游戏集合）
+    const players = me.json.players;
+    assert.ok(players && 'clawclash' in players, 'players 应含注册表游戏');
+    assert.ok(Object.keys(players).length >= 2, 'players 应遍历全部注册游戏');
+    for (const gid of Object.keys(players)) assert.equal(players[gid], null, `未建号时 players.${gid} 应为 null`);
+    // 选手详情仍由各游戏自己的 /me 端点判定（未建回 404）
     const botMe = await api(B, 'GET', '/api/bot/me', { cookie: accts[0].cookie });
     assert.equal(botMe.status, 404, '尚未建棋手时钳王 /me 应 404');
   });
@@ -124,6 +129,10 @@ test('API 端到端冒烟（真实 server + 临时库）', { timeout: 480000 }, 
       assert.ok(key, 'prompt 中应含完整棋手密钥');
       bots.push({ botId: r.json.botId, key, cookie: accts[i].cookie });
     }
+    // 建号后 /api/me 的 players 应出现该游戏概要（其余游戏仍 null）
+    const me = await api(B, 'GET', '/api/me', { cookie: accts[0].cookie });
+    assert.equal(me.json.players.clawclash.id, bots[0].botId, 'players.clawclash 应含新建棋手概要');
+    assert.equal(me.json.players.prisoner, null, '未建号游戏仍应为 null');
     // 同账号第二名棋手 → 409；重名 → 409；name-check 反映占用
     assert.equal((await api(B, 'POST', '/api/bot/create', { cookie: accts[0].cookie, body: { name: '另一个' } })).status, 409);
     assert.equal((await api(B, 'POST', '/api/bot/create', { cookie: accts[1].cookie, body: { name: '棋手甲' } })).status, 409);

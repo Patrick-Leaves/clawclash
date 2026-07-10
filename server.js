@@ -334,19 +334,28 @@ route('POST', '/api/account/resend-verification', (req, res) => {
 });
 
 // ============================================================
-// § 当前登录态（账号-only，游戏无关）
+// § 当前登录态（游戏无关的通用结构）
 // GET /api/me  (需 Cookie)
-// 只返账号信息；各游戏的「我的选手」资产由该游戏自己的 /me 端点按需拉取
-// （前端插件 renderMyBot/renderMyPrisoner/renderMyDarkchess 各自 fetch /api/<game>/me），
-// 本平台层端点不再耦合任何具体游戏。
+// 账号信息 + 该账号在各游戏的选手概要（遍历注册表：players.<gid> = 概要 | null）。
+// 新增游戏自动出现在 players 里，本文件与前端壳均无需改动（账号总览零改壳）。
+// 选手详情（密钥/版本/战绩等）仍由各游戏自己的 /me 端点返回。
 // ============================================================
+const gameWebs = {}; // gid → games/<gid>/server 适配模块（挂载循环填充）
 route('GET', '/api/me', (req, res) => {
   const { account, error } = requireSession(req);
   if (error) return sendJson(res, 401, { ok: false, error });
+  const players = {};
+  for (const gid of registry.ids) {
+    const p = gameWebs[gid] && gameWebs[gid].store.getByAccount(account.id);
+    players[gid] = p
+      ? { id: p.id, name: p.name, avatar: p.avatar, rp: p.rp, currentVersion: p.current_version }
+      : null;
+  }
   sendJson(res, 200, {
     ok: true,
     account: { id: account.id, nickname: account.nickname, email: account.email },
     emailVerified: !!account.email_verified,
+    players,
   });
 });
 
@@ -400,6 +409,7 @@ const helpers = {
 for (const gid of registry.ids) {
   const game = registry.manifests[gid];
   const web = require('./games/' + gid + '/server'); // 服务端适配（含 db 访问；runner 子进程绝不加载）
+  gameWebs[gid] = web; // /api/me 的各游戏选手概要据此读取
   mountGameRoutes({ route, game, web, helpers });
   if (web.extraRoutes) web.extraRoutes({ route, ...helpers });
 }

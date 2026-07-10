@@ -22,8 +22,8 @@ const { show: showPTab } = makeTabs({
 const PD_PLAYER_CFG = {
   noun: '囚徒', createTitle: '创建囚徒', createLabel: '创建囚徒', nameLabel: '囚徒名称', placeholder: '例如：镜面囚徒',
   urls: { create: '/api/prisoner/create', nameCheck: '/api/prisoner/name-check', preset: '/api/prisoner/me/avatar/preset', upload: '/api/prisoner/me/avatar' },
-  onCreated(r) { MY_PRISONER_ID = r.prisonerId; toast('囚徒已创建'); renderMyPrisoner(); },
-  onAvatarUpdated() { renderMyPrisoner(); },
+  async onCreated() { await refreshMe(); toast('囚徒已创建'); renderMyPrisoner(); },
+  async onAvatarUpdated() { await refreshMe(); renderMyPrisoner(); },
 };
 function openCreatePrisoner() { openCreatePlayer(PD_PLAYER_CFG); }
 function openPrisonerAvatarEditor(currentAvatar) { openAvatarEditorShared(PD_PLAYER_CFG, currentAvatar); }
@@ -39,16 +39,6 @@ async function ensurePDMeta() {
   return PD_META;
 }
 
-// 我的囚徒 id 缓存：undefined=未知（需拉取），null=无囚徒，number=有。登录态变化时在 refreshMe 里失效。
-let MY_PRISONER_ID;
-async function ensureMyPrisonerId() {
-  if (MY_PRISONER_ID !== undefined) return MY_PRISONER_ID;
-  if (!ME || !ME.account) { MY_PRISONER_ID = null; return null; }
-  const r = await apiFetch('GET', '/api/prisoner/me');
-  MY_PRISONER_ID = (r.ok && r.prisoner) ? r.prisoner.id : null;
-  return MY_PRISONER_ID;
-}
-
 async function loadPrisonerLeaderboard() {
   await ensurePDMeta();
   const hint = $('pdRangeHint');
@@ -60,7 +50,7 @@ async function loadPrisonerLeaderboard() {
   renderLeaderboardRows(tbody, data.leaderboard, {
     idField: 'prisonerId', emptyText: '暂无囚徒，快来抢首位',
     // 点自己的囚徒 → 进「我的囚徒」详情（含 Agent 接入 + 版本记录），而非公开页
-    onDetail: async (id) => { (await ensureMyPrisonerId()) === id ? showPTab('pmybot') : showPublicPrisoner(id); },
+    onDetail: (id) => { const mine = myPlayer('prisoner'); mine && mine.id === id ? showPTab('pmybot') : showPublicPrisoner(id); },
   });
 }
 $('prefreshLb') && $('prefreshLb').addEventListener('click', loadPrisonerLeaderboard);
@@ -77,7 +67,6 @@ async function renderMyPrisoner() {
   }
   const r = await apiFetch('GET', '/api/prisoner/me');
   if (r.__status === 404) {
-    MY_PRISONER_ID = null;
     // 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有囚徒</h2><p>创建一名囚徒，选一个头像；策略脚本由你/Agent 稍后提交。</p>
       <button class="primary" id="pdCreateOpen">创建囚徒 →</button></div>`;
@@ -87,7 +76,6 @@ async function renderMyPrisoner() {
   }
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const p = r.prisoner;
-  MY_PRISONER_ID = p.id;
   const empty = p.status === 'empty';
   box.innerHTML = verifyBannerHtml() + `
     <div class="detail-head">
@@ -460,6 +448,5 @@ Platform.registerGame({
   },
   showMine() { showPTab('pmybot'); },
   defaultView() { showPTab('pplay'); },
-  onAuthChange() { MY_PRISONER_ID = undefined; }, // 登录态变化 → 我的囚徒 id 缓存失效，下次重取
 });
 })();
