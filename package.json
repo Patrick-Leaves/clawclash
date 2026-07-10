@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test",
+    "test": "node --test --test-concurrency=1",
     "test:unit": "node --test test/scoring.test.js test/locks.test.js test/settle.test.js",
     "test:rules": "node test_rules.js"
   },

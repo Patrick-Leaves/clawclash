@@ -57,8 +57,9 @@ platform/            # 平台通用模块（游戏无关）
   locks.js           #   per-key 串行锁（结算/发布防并发竞态）
   microcache.js      #   天梯榜 JSON 微缓存（序列化 body + ETag，TTL 内复用）
   guide_common.js    #   Agent 指南的平台通用段落（鉴权/段位/反刷分）
-  execpool.js        #   父进程侧：fork-per-task 子进程调度 + 硬超时 + Node 权限模型闸门
-  runner.js          #   子进程入口：按游戏注册表分发任务，执行不可信代码
+  execpool.js        #   父进程侧：常驻 runner 子进程池（预 fork + IPC 派发 + 硬超时处决换新）
+                     #   + Node 权限模型闸门；池大小 RUNNER_POOL_SIZE 可配
+  runner.js          #   常驻子进程：按游戏注册表分发任务循环执行不可信代码（任务间不退出）
 games/               # 游戏目录（一款游戏 = 一个目录）
   registry.js        #   游戏注册表（子进程安全，不触 db；新增游戏在此登记 id）
   clawclash/         #   钳王争霸

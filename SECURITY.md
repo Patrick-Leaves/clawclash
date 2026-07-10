@@ -4,10 +4,11 @@
 
 ## 一、代码层已实现
 
-- **独立子进程执行**：所有不可信对局（正式挑战 / 烟雾测试 / 试玩）经 `platform/execpool.js` `fork` 到 `platform/runner.js` 子进程执行（fork-per-task，任务按游戏注册表分发到 `games/<id>/`），与 Web/DB 主进程隔离：
+- **独立子进程执行（常驻 runner 池）**：所有不可信对局（正式挑战 / 烟雾测试 / 试玩）经 `platform/execpool.js` 的**常驻子进程池**派发到 `platform/runner.js` 执行（预 fork N 个、IPC 逐个下发任务、任务间不退出，任务按游戏注册表分发到 `games/<id>/`），与 Web/DB 主进程隔离：
   - 子进程 env 经白名单剥离机密（`SESSION_SECRET`、SMTP 等不传入），逃逸后读不到这些机密；
-  - 父进程对每个任务设硬超时并 `SIGKILL` 子进程，**主事件循环不被阻塞**（实测：子进程跑死循环烟雾时，主进程其它请求仍毫秒级响应）；
-  - 子进程不持有数据库句柄；并发子进程数有上限（超出回 503）。
+  - 父进程对每个任务设硬超时，超时 `SIGKILL` 该 worker 并补充新进程，**主事件循环不被阻塞**（实测：子进程跑死循环烟雾时，主进程其它请求仍毫秒级响应）；
+  - **跨任务污染防线**（常驻进程相对 fork-per-task 的新增风险）：用户代码每任务都在全新 vm 上下文编译执行、绝不复用；任务超时/执行异常/进程意外退出 → 该 worker 直接处决换新；正常任务累计一定次数后也主动换新（防内存膨胀与隐性全局状态累积）；
+  - 子进程不持有数据库句柄；池大小可配（`RUNNER_POOL_SIZE`，默认 4），排队超限回 503。
 - **Node 权限模型（子进程内进程级闸门）**：`execpool.js` 以 `--permission --allow-fs-read=<platform 目录> --allow-fs-read=<games 目录>` fork 子进程。即便 vm 逃逸拿到宿主 realm 的真实 `fs`/`child_process`，越权操作也会在 C++ 层被拒（`ERR_ACCESS_DENIED`）：
   - **只放行读取 `platform/` 与 `games/` 目录**（runner 入口与各游戏引擎，均为本仓库代码、非机密）。app 根目录下的 `ecosystem.config.js`（含 `SESSION_SECRET`）与 `sixchess.db` 都在放行目录之外 → **逃逸后也读不到**（已实测：关闭权限模型时逃逸脚本能读出密钥文件，开启后同样脚本被 `ERR_ACCESS_DENIED` 拦下）；
   - **禁止一切 fs 写、`child_process`、`worker_threads`、原生插件**（均实测 `ERR_ACCESS_DENIED`）；
@@ -35,7 +36,7 @@
    iptables -A OUTPUT -m owner --uid-owner clawbot -j REJECT         # 丢弃其余对外连接
    ```
    或整体置于禁网的网络命名空间 / 容器。
-2. **进程/容器隔离（建议）**：让子进程跑在独立低权限用户 / 容器中（容器 + seccomp，或 gVisor/Firecracker 等），把权限模型之外的攻击面（内核漏洞、`/proc` 信息泄露等）也收口。代码已是 fork-per-task 的可杀子进程，部署侧补齐 OS 约束即可。
+2. **进程/容器隔离（建议）**：让子进程跑在独立低权限用户 / 容器中（容器 + seccomp，或 gVisor/Firecracker 等），把权限模型之外的攻击面（内核漏洞、`/proc` 信息泄露等）也收口。代码侧是可随时处决换新的常驻 runner 池（超时/异常即杀），部署侧补齐 OS 约束即可。
 3. **资源上限（建议）**：对执行进程设 CPU/内存/句柄 cgroup 限额，叠加在挂钟超时之上，防单场极端占用拖垮小机器。
 4. **密钥隔离（已由权限模型 + env 白名单覆盖，仍建议冗余）**：`SESSION_SECRET` 等机密既不在子进程 env 中，其所在文件也在只读放行目录之外；进一步可把机密文件挪出应用目录并收紧属主权限。
 
