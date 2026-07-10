@@ -613,19 +613,24 @@ $('cropConfirm').addEventListener('click', async () => {
 });
 
 // ============================================================
-// 启动：拉游戏清单 → 注入各游戏面板 → 顺序加载脚本 → 初始化
+// 启动：拉游戏清单 → 各游戏面板+脚本并行加载 → 并行初始化
 // ============================================================
-const loadedScripts = new Set();
+// 按 src 缓存"加载中/已完成"的 Promise（而非布尔标记）：多个游戏并行加载时，
+// 共享脚本（如 /builtin-bots.js）的后到调用方会拿到同一个 Promise 一起等，
+// 而不是拿到一个提前 resolve 的假完成态——否则并行下 app.js 可能在共享脚本
+// 真正下载完成前就执行，读到未挂载的 window.PdRules 等全局对象。
+const loadedScripts = new Map();
 function loadScriptOnce(src) {
-  if (loadedScripts.has(src)) return Promise.resolve();
-  loadedScripts.add(src);
-  return new Promise((resolve, reject) => {
+  if (loadedScripts.has(src)) return loadedScripts.get(src);
+  const p = new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = src;
     s.onload = resolve;
     s.onerror = () => reject(new Error('脚本加载失败: ' + src));
     document.body.appendChild(s);
   });
+  loadedScripts.set(src, p);
+  return p;
 }
 function buildGameNav(games) {
   const nav = $('gameNav'); nav.innerHTML = '';
@@ -639,7 +644,11 @@ function buildGameNav(games) {
 (async function boot() {
   const meta = await apiFetch('GET', '/api/games');
   if (!meta.ok || !meta.games || !meta.games.length) { toast('平台加载失败，请刷新重试'); return; }
-  for (const g of meta.games) {
+  // 各游戏面板+脚本并行加载（游戏之间彼此独立，互不依赖）：
+  // 面板 fetch 并行发起；游戏内的脚本按声明顺序串行（同一游戏内可能有依赖顺序，
+  // 如暗战 /darkchess-bots.js 须先于其 app.js）；共享脚本经 loadScriptOnce 的
+  // Promise 缓存去重，不会重复请求或提前误判"加载完成"。
+  await Promise.all(meta.games.map(async (g) => {
     // 面板片段：subnav → 页头、panel → 主区、overlays → body（弹窗不随面板隐藏）
     const html = await (await fetch(`/games/${g.id}/panel.html`, { credentials: 'same-origin' })).text();
     const tpl = document.createElement('template');
@@ -650,12 +659,19 @@ function buildGameNav(games) {
     if (subnav) { subnav.dataset.game = g.id; subnav.classList.add('hidden'); $('subnavHost').appendChild(subnav); }
     if (panel) { panel.dataset.game = g.id; panel.classList.remove('active'); $('gameHost').appendChild(panel); }
     if (overlays) document.body.appendChild(overlays);
-    // 面板注入后再按序加载该游戏声明的脚本（共享依赖如 /builtin-bots.js 去重只载一次）
     for (const src of g.scripts) await loadScriptOnce(src);
-  }
+  }));
+  // 并行加载下各游戏 app.js 的执行（进而 registerGame 调用）顺序不再确定——
+  // 按 /api/games 的注册表顺序重排，确保 Platform.games[0]（resetToDefault 用）
+  // 仍稳定指向第一款游戏，不受并行完成时序影响。
+  Platform.games.sort((a, b) => meta.games.findIndex((g) => g.id === a.id) - meta.games.findIndex((g) => g.id === b.id));
   bindModalChrome();
   buildGameNav(meta.games);
   await refreshMe();
-  for (const g of meta.games) { const p = Platform.byId[g.id]; if (p && p.init) await p.init(); }
+  // 各游戏 init() 只操作自己的 DOM 子树 + 自己的接口，彼此独立，并行执行。
+  await Promise.all(meta.games.map((g) => {
+    const p = Platform.byId[g.id];
+    return p && p.init ? p.init() : null;
+  }));
   showGame(meta.games[0].id);
 })();
