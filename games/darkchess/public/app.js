@@ -192,17 +192,19 @@ async function loadDqMyMatches() {
   bindDqReplays(box);
 }
 
-function dqActionText(h) {
-  const seatLabel = h.seat === 'a' ? '甲方' : '乙方';
-  if (h.pass) return `${seatLabel}：停一手`;
-  if (!h.action) return `${seatLabel}：（无动作）`;
+// nameOf(seat) → 该座位的展示名。试玩传 dqSeatName（你/对手/两位玩家名），
+// 回放传 挑战方/被挑战方名；缺省回落到「甲方/乙方」保持兼容。
+function dqActionText(h, nameOf) {
+  const who = nameOf ? nameOf(h.seat) : (h.seat === 'a' ? '甲方' : '乙方');
+  if (h.pass) return `${who}：停一手`;
+  if (!h.action) return `${who}：（无动作）`;
   if (h.action.action === 'flip') {
     const rv = h.revealed;
     const label = rv ? (rv.side === 'black' ? '黑' : '红') + (DQ_LABELS[rv.side][rv.kind] || '?') : '?';
-    return `${seatLabel}：翻开 [${h.action.at.join(',')}] → ${label}`;
+    return `${who}：翻开 [${h.action.at.join(',')}] → ${label}`;
   }
   const cap = (h.captured || []).map((c) => (c.side === 'black' ? '黑' : '红') + (c.kind ? (DQ_LABELS[c.side][c.kind] || '?') : '?（暗棋隔子吃）')).join('、');
-  const base = `${seatLabel}：[${h.action.from.join(',')}] → [${h.action.to.join(',')}]`;
+  const base = `${who}：[${h.action.from.join(',')}] → [${h.action.to.join(',')}]`;
   return cap ? `${base}，吃掉 ${cap}` : base;
 }
 
@@ -241,6 +243,42 @@ function dqPhaseAtFrame(historySlice) {
   }
   return '翻棋定序';
 }
+// 逐帧算出「座位 → 颜色」的揭示进度，复刻引擎定序逻辑（两次翻棋配对，颜色不同即分定）。
+// 与揭示节奏保持一致：定序未完成前返回 {}，卡片仍只显示「黑方/红方」，绝不提前剧透谁执何色。
+// 极端兜底（全翻仍未分色 → 引擎随机分派，无法据翻棋重演）从首个走子动作反推：走子方必已定色，
+// 其所动棋子的颜色即其执方色。frames[k] 是 history[k-1] 之后的棋盘，即 history[k] 走子前的棋盘。
+function dqColorRevealFrames(frames, history) {
+  const otherSeat = (s) => (s === 'a' ? 'b' : 'a');
+  const out = [{}];
+  const colorOf = {};
+  let pending = [];
+  for (let k = 0; k < history.length; k++) {
+    const h = history[k];
+    if (Object.keys(colorOf).length < 2 && h && h.action) {
+      if (h.action.action === 'flip') {
+        if (h.revealed) {
+          pending.push({ seat: h.seat, side: h.revealed.side });
+          if (pending.length === 2) {
+            if (pending[0].side !== pending[1].side) {
+              colorOf[pending[0].seat] = pending[0].side;
+              colorOf[pending[1].seat] = pending[1].side;
+            }
+            pending = [];
+          }
+        }
+      } else if (h.action.from) {
+        const b = frames[k] && frames[k].board;
+        const cell = b && b[h.action.from[0]] && b[h.action.from[0]][h.action.from[1]];
+        if (cell && cell.side) {
+          colorOf[h.seat] = cell.side;
+          colorOf[otherSeat(h.seat)] = cell.side === 'black' ? 'red' : 'black';
+        }
+      }
+    }
+    out.push({ ...colorOf });
+  }
+  return out;
+}
 
 function dqRCellAt(x, y) { return document.querySelector(`#dqRBoard .dq-cell[data-x="${x}"][data-y="${y}"]`); }
 function dqBuildReplayBoardCells() {
@@ -276,6 +314,18 @@ function dqRenderReplayFrame() {
   }
   $('dqRBlackCount').textContent = black;
   $('dqRRedCount').textContent = red;
+  // 卡片持方名：随揭示进度逐帧显示，定序完成后把挑战方/被挑战方名挂到对应色卡上。
+  const colorOf = (dqReplay.colorFrames && dqReplay.colorFrames[dqReplay.cur]) || {};
+  const seatOfColor = (color) => (colorOf.a === color ? 'a' : (colorOf.b === color ? 'b' : null));
+  const rCardName = (color, label) => {
+    const labelHtml = `<span class="side-label">${esc(label)}</span>`;
+    const seat = seatOfColor(color);
+    if (!seat) return labelHtml;
+    const name = seat === 'a' ? (dqReplay.names?.a || '甲方') : (dqReplay.names?.b || '乙方');
+    return `${labelHtml} <span class="side-owner">${esc(name)}</span>`;
+  };
+  $('dqRBlackName').innerHTML = rCardName('black', '黑方');
+  $('dqRRedName').innerHTML = rCardName('red', '红方');
   $('dqRTurnNo').textContent = dqReplay.cur;
   $('dqRPhase').textContent = dqPhaseAtFrame(dqReplay.frames.slice(1, dqReplay.cur + 1).map((fr) => fr.step));
   $('dqRPlyIndicator').textContent = dqReplay.frames.length > 1 ? `第 ${dqReplay.cur} / ${dqReplay.frames.length - 1} 手` : '—';
@@ -327,10 +377,13 @@ async function openDqMatch(urlId) {
   dqBuildReplayBoardCells();
   const history = r.gameData.history || [];
   dqReplay.frames = dqBuildReplayFrames(r.initialBoard, history);
+  dqReplay.colorFrames = dqColorRevealFrames(dqReplay.frames, history);
+  dqReplay.names = { a: r.challengerName || '甲方', b: r.challengedName || '乙方' };
   dqReplay.meta = { winner: r.winner, reason: r.reason, turns: r.turns, challengerName: r.challengerName, challengedName: r.challengedName };
   dqReplay.cur = 0;
   $('dqReplayTitle').textContent = `对局回放 · ${r.challengerName || '?'} vs ${r.challengedName || '?'}`;
-  $('dqRMoveList').innerHTML = history.map((h) => `<li>${esc(dqActionText(h))}</li>`).join('');
+  const rNameOf = (seat) => (seat === 'a' ? dqReplay.names.a : dqReplay.names.b);
+  $('dqRMoveList').innerHTML = history.map((h) => `<li>${esc(dqActionText(h, rNameOf))}</li>`).join('');
   openModal('dqReplayModal');
   dqRenderReplayFrame();
 }
@@ -539,11 +592,18 @@ function dqRenderBoard() {
   }
 }
 
+// 座位 → 展示名：vs 模式人类座为「你」、对手座为对手名；双人同屏用两位玩家名。
+// 颜色（黑/红）在翻棋定序阶段才分出，故这里以「座位」为锚，避免再引入甲方/乙方中间层。
+function dqSeatName(seat) {
+  if (dqIsLocal) return seat === 'a' ? (dqLocalNames?.a || '玩家1') : (dqLocalNames?.b || '玩家2');
+  return seat === dqState?.humanSeat ? '你' : (dqState?.opponent || '对手');
+}
+
 function dqRenderSideInfo() {
   if (!dqState) {
     $('dqBlackCount').textContent = 16; $('dqRedCount').textContent = 16;
     $('dqPhase').textContent = '—'; $('dqTurnNo').textContent = 0; $('dqNcm').textContent = 0;
-    $('dqMeSide').textContent = '未定'; $('dqOppSide').textContent = '未定';
+    $('dqBlackName').innerHTML = '<span class="side-label">黑方</span>'; $('dqRedName').innerHTML = '<span class="side-label">红方</span>';
     $('dqBlackCard').classList.remove('active'); $('dqRedCard').classList.remove('active');
     return;
   }
@@ -553,15 +613,18 @@ function dqRenderSideInfo() {
   $('dqTurnNo').textContent = dqState.history.length;
   $('dqNcm').textContent = dqState.noCaptureCount;
   const colorOf = dqState.colorOf || {};
-  const seatLabel = (seat) => {
-    const color = colorOf[seat];
-    if (!color) return '未定';
-    const label = color === 'black' ? '黑方' : '红方';
-    if (dqIsLocal) return label;
-    return seat === dqState.humanSeat ? `${label}（你）` : `${label}（对手）`;
+  const seatOfColor = (color) => (colorOf.a === color ? 'a' : (colorOf.b === color ? 'b' : null));
+  // 归属未定（翻棋定序中）只显示「黑方/红方」；一旦分出颜色，直接把持方名挂到对应色卡上，
+  // 人类持方额外高亮，让玩家一眼看出哪张卡是自己。
+  const cardName = (color, label) => {
+    const labelHtml = `<span class="side-label">${esc(label)}</span>`;
+    const seat = seatOfColor(color);
+    if (!seat) return labelHtml;
+    const isMe = !dqIsLocal && seat === dqState.humanSeat;
+    return `${labelHtml} <span class="side-owner${isMe ? ' me' : ''}">${esc(dqSeatName(seat))}</span>`;
   };
-  $('dqMeSide').textContent = seatLabel('a');
-  $('dqOppSide').textContent = seatLabel('b');
+  $('dqBlackName').innerHTML = cardName('black', '黑方');
+  $('dqRedName').innerHTML = cardName('red', '红方');
   const activeColor = !dqState.status.over && dqState.toMoveSeat ? colorOf[dqState.toMoveSeat] : null;
   $('dqBlackCard').classList.toggle('active', activeColor === 'black');
   $('dqRedCard').classList.toggle('active', activeColor === 'red');
@@ -570,7 +633,7 @@ function dqRenderSideInfo() {
 function dqRenderMoveList() {
   const ol = $('dqMoveList');
   if (!dqState) { ol.innerHTML = ''; return; }
-  ol.innerHTML = dqState.history.map((h) => `<li>${esc(dqActionText(h))}</li>`).join('');
+  ol.innerHTML = dqState.history.map((h) => `<li>${esc(dqActionText(h, dqSeatName))}</li>`).join('');
   ol.scrollTop = ol.scrollHeight;
 }
 
@@ -583,20 +646,16 @@ function dqRenderStatus() {
     $('dqPlyIndicator').textContent = '—';
     return;
   }
-  const seatDisplayName = (seat) => {
-    if (dqIsLocal) return seat === 'a' ? (dqLocalNames?.a || '甲方') : (dqLocalNames?.b || '乙方');
-    return seat === dqState.humanSeat ? '你' : (dqState.opponent || '对手');
-  };
   if (dqState.status.over) {
     const w = dqState.status.winner;
     const reason = DQ_REASON_LABEL[dqState.status.reason] || dqState.status.reason;
     const iWon = !dqIsLocal && w === dqState.humanSeat;
     banner.className = 'result-banner ' + (w === 'draw' ? '' : (iWon ? 'win' : ''));
-    banner.innerHTML = w === 'draw' ? `和棋<small>${esc(reason)}</small>` : `🏆 ${esc(seatDisplayName(w))} 获胜！<small>${esc(reason)}</small>`;
+    banner.innerHTML = w === 'draw' ? `和棋<small>${esc(reason)}</small>` : `🏆 ${esc(dqSeatName(w))} 获胜！<small>${esc(reason)}</small>`;
     status.textContent = `对局结束 · 共 ${dqState.history.length} 手`;
   } else {
     banner.className = 'result-banner hidden';
-    const turnLabel = `轮到 ${esc(seatDisplayName(dqState.toMoveSeat))}`;
+    const turnLabel = `轮到 ${esc(dqSeatName(dqState.toMoveSeat))}`;
     status.textContent = dqState.phase === 'determining' ? `翻棋定序阶段 · ${turnLabel}` : turnLabel;
   }
   $('dqPlyIndicator').textContent = dqState.history.length ? `第 ${dqState.history.length} 手` : '—';

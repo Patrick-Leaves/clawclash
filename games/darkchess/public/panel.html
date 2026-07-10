@@ -11,7 +11,7 @@
 <div class="section-panel" data-slot="panel">
   <!-- ===== 人机试玩 ===== -->
   <div id="dqtab-dqplay" class="dqtab-panel active">
-    <div class="subtabs">
+    <div class="subtabs play-subtabs">
       <button class="subtab active" data-dqplaymode="ai">挑战棋手</button>
       <button class="subtab" data-dqplaymode="local">双人同屏</button>
     </div>
@@ -45,17 +45,13 @@
       <aside class="right">
         <div id="dqResultBanner" class="result-banner hidden"></div>
         <div class="info-grid">
-          <div class="info-card black-side" id="dqBlackCard"><div class="side-name">黑方</div><div class="side-count"><span id="dqBlackCount">16</span><small>子</small></div></div>
-          <div class="info-card red-side" id="dqRedCard"><div class="side-name">红方</div><div class="side-count"><span id="dqRedCount">16</span><small>子</small></div></div>
+          <div class="info-card black-side" id="dqBlackCard"><div class="side-name" id="dqBlackName"><span class="side-label">黑方</span></div><div class="side-count"><span id="dqBlackCount">16</span><small>子</small></div></div>
+          <div class="info-card red-side" id="dqRedCard"><div class="side-name" id="dqRedName"><span class="side-label">红方</span></div><div class="side-count"><span id="dqRedCount">16</span><small>子</small></div></div>
         </div>
         <div class="meta-line">
           <span>阶段 <b id="dqPhase">—</b></span>
           <span>回合 <b id="dqTurnNo">0</b></span>
           <span>无吃子 <b id="dqNcm">0</b>/40</span>
-        </div>
-        <div class="meta-line">
-          <span>甲方 <b id="dqMeSide">未定</b></span>
-          <span>乙方 <b id="dqOppSide">未定</b></span>
         </div>
         <h3 class="movelist-title">操作记录</h3>
         <ol id="dqMoveList" class="move-list"></ol>
@@ -175,8 +171,8 @@
         <aside class="replay-side">
           <div id="dqRResultBanner" class="result-banner hidden"></div>
           <div class="info-grid">
-            <div class="info-card black-side" id="dqRBlackCard"><div class="side-name">黑方</div><div class="side-count"><span id="dqRBlackCount">16</span><small>子</small></div></div>
-            <div class="info-card red-side" id="dqRRedCard"><div class="side-name">红方</div><div class="side-count"><span id="dqRRedCount">16</span><small>子</small></div></div>
+            <div class="info-card black-side" id="dqRBlackCard"><div class="side-name" id="dqRBlackName"><span class="side-label">黑方</span></div><div class="side-count"><span id="dqRBlackCount">16</span><small>子</small></div></div>
+            <div class="info-card red-side" id="dqRRedCard"><div class="side-name" id="dqRRedName"><span class="side-label">红方</span></div><div class="side-count"><span id="dqRRedCount">16</span><small>子</small></div></div>
           </div>
           <div class="meta-line">
             <span>阶段 <b id="dqRPhase">—</b></span>
