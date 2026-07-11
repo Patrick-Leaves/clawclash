@@ -190,12 +190,63 @@ function showHome() {
   updateHomeAuth();
   window.scrollTo(0, 0);
 }
-function showGame(gid) {
+// 进入某游戏：懒加载其插件（面板 + 脚本 + init，仅首次进入），期间内容区显示加载态。
+// 首页与侧栏只需 /api/games 的元数据即可渲染，游戏插件按需加载——避免上来就下发三款游戏资产。
+async function showGame(gid) {
   enterGameView();
-  Platform.activateGame(gid);
+  const firstLoad = !gameLoaders[gid];
+  renderSidebar(gid);              // 侧栏立即显示目标游戏名 + 二级导航（数据来自 meta，无需插件）
+  if (firstLoad) gameHostLoading(true);
+  window.scrollTo(0, 0);
+  try {
+    await ensureGameLoaded(gid);   // 面板注入 + 脚本按序加载 + init() 一次（去重）
+  } catch {
+    gameHostLoading(false);
+    toast('游戏加载失败，请刷新重试');
+    return;
+  }
+  gameHostLoading(false);
+  Platform.activateGame(gid);      // 切面板显隐 + 侧栏（CURRENT_GAME 此刻置位）
   const p = Platform.byId[gid];
   p && p.onShow && p.onShow();
-  window.scrollTo(0, 0);
+}
+// 内容区加载态：懒加载游戏插件期间隐藏所有已就绪面板、显示占位。
+function gameHostLoading(on) {
+  let el = $('gameHostLoading');
+  if (on) {
+    document.querySelectorAll('#gameHost > .section-panel').forEach((p) => p.classList.remove('active'));
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'gameHostLoading'; el.className = 'muted-center'; el.style.padding = '80px 20px';
+      el.textContent = '加载中…';
+      $('gameHost').appendChild(el);
+    }
+    el.style.display = '';
+  } else if (el) {
+    el.style.display = 'none';
+  }
+}
+// 懒加载游戏插件：面板片段注入（panel→#gameHost、overlays→body）+ manifest.client.scripts
+// 按声明顺序串行加载（同一游戏内部有依赖，如暗战 /darkchess-bots.js 须先于 app.js）+ init() 一次。
+// Promise 去重：同一游戏并发/重复进入只加载一次；共享脚本再经 loadScriptOnce 全局去重。
+const gameLoaders = {};
+function ensureGameLoaded(gid) {
+  if (gameLoaders[gid]) return gameLoaders[gid];
+  const g = gamesMeta[gid];
+  gameLoaders[gid] = (async () => {
+    const html = await (await fetch(`/games/${gid}/panel.html`, { credentials: 'same-origin' })).text();
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const panel = tpl.content.querySelector('[data-slot="panel"]');
+    const overlays = tpl.content.querySelector('[data-slot="overlays"]');
+    if (panel) { panel.dataset.game = gid; panel.classList.remove('active'); $('gameHost').appendChild(panel); }
+    if (overlays) document.body.appendChild(overlays);
+    for (const src of g.scripts) await loadScriptOnce(src); // app.js 内触发 registerGame
+    bindModalChrome();                                       // 绑定新注入 overlays 的关闭/遮罩
+    const p = Platform.byId[gid];
+    if (p && p.init) await p.init();
+  })();
+  return gameLoaders[gid];
 }
 
 // ============================================================
@@ -898,35 +949,13 @@ function loadScriptOnce(src) {
   const meta = await apiFetch('GET', '/api/games');
   if (!meta.ok || !meta.games || !meta.games.length) { toast('平台加载失败，请刷新重试'); return; }
   for (const g of meta.games) gamesMeta[g.id] = g; // 首页卡片 / 侧栏 nav 的元数据源
-  // 各游戏面板+脚本并行加载（游戏之间彼此独立，互不依赖）：
-  // 面板 fetch 并行发起；游戏内的脚本按声明顺序串行（同一游戏内可能有依赖顺序，
-  // 如暗战 /darkchess-bots.js 须先于其 app.js）；共享脚本经 loadScriptOnce 的
-  // Promise 缓存去重，不会重复请求或提前误判"加载完成"。
-  await Promise.all(meta.games.map(async (g) => {
-    // 面板片段：panel → #gameHost、overlays → body（弹窗不随面板隐藏）。
-    // 二级导航不再来自面板（subnav slot 已移除），改由壳按 manifest.nav 统一渲染在侧栏。
-    const html = await (await fetch(`/games/${g.id}/panel.html`, { credentials: 'same-origin' })).text();
-    const tpl = document.createElement('template');
-    tpl.innerHTML = html;
-    const panel = tpl.content.querySelector('[data-slot="panel"]');
-    const overlays = tpl.content.querySelector('[data-slot="overlays"]');
-    if (panel) { panel.dataset.game = g.id; panel.classList.remove('active'); $('gameHost').appendChild(panel); }
-    if (overlays) document.body.appendChild(overlays);
-    for (const src of g.scripts) await loadScriptOnce(src);
-  }));
-  // 并行加载下各游戏 app.js 的执行（进而 registerGame 调用）顺序不再确定——
-  // 按 /api/games 的注册表顺序重排，确保 Platform.games[0] 稳定指向第一款游戏。
-  Platform.games.sort((a, b) => meta.games.findIndex((g) => g.id === a.id) - meta.games.findIndex((g) => g.id === b.id));
   bindModalChrome();
   $('brandMark').innerHTML = brandMarkSvg();
   $('brandHome').addEventListener('click', showHome);
-  buildSidebar(meta.games);
-  renderHome(meta.games);
-  await refreshMe();
-  // 各游戏 init() 只操作自己的 DOM 子树 + 自己的接口，彼此独立，并行执行。
-  await Promise.all(meta.games.map((g) => {
-    const p = Platform.byId[g.id];
-    return p && p.init ? p.init() : null;
-  }));
-  showHome(); // 默认落地首页（点游戏卡 / 侧栏切换器进入游戏框架）
+  buildSidebar(meta.games);   // 侧栏「当前游戏」切换器骨架（列表来自 meta，无需插件）
+  renderHome(meta.games);     // 海报首页（Hero + 四步 + 游戏卡）——只用 /api/games 元数据
+  await refreshMe();          // 登录态（决定 Hero CTA / 顶栏），轻量
+  showHome();                 // 默认落地首页
+  // 各游戏插件（panel.html + 引擎包 + app.js + init()）改为进入游戏时按需懒加载
+  // （showGame → ensureGameLoaded）——首页无需任何游戏插件，避免上来就下发三款游戏资产。
 })();
