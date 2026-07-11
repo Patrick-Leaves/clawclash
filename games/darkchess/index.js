@@ -21,6 +21,8 @@ function pick(g) {
 module.exports = {
   id: 'darkchess',
   name: '象棋暗战',
+  nameEn: 'Dark Chess',
+  tagline: '信息不完全的象棋变体，用侦察与推理揭开战场迷雾。',
   noun: '棋手',
   keyParam: 'darkchess_key', // 指南/鉴权报错里的密钥占位名
   idField: 'darkchessId',    // 对外 JSON 的 id 字段名
@@ -31,7 +33,16 @@ module.exports = {
   guidePath: '/agent-guide-darkchess',
   guideMarkdown: buildGuide({ scoredLimit: SCORED_LIMIT }),
   // /darkchess-bots.js 须先于 app.js 加载（app.js 引用其暴露的 window.Darkchess* 全局）
-  client: { scripts: ['/darkchess-bots.js', '/games/darkchess/app.js'] },
+  // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录）
+  client: {
+    scripts: ['/darkchess-bots.js', '/games/darkchess/app.js'],
+    nav: [
+      { key: 'dqplay', label: '试玩' },
+      { key: 'dqleaderboard', label: '天梯榜' },
+      { key: 'dqmybot', label: '我的棋手', auth: true },
+      { key: 'dqguide', label: 'Agent 指南' },
+    ],
+  },
 
   // ---- runner 子进程任务（执行不可信代码；键 = execpool.run 的 kind）----
   // limits: 各任务的父进程硬超时（超时 SIGKILL 子进程）

@@ -382,7 +382,12 @@ route('GET', '/darkchess-bots.js', (req, res) => {
 route('GET', '/api/games', (req, res) => {
   sendJson(res, 200, { ok: true, games: registry.ids.map((id) => {
     const m = registry.manifests[id];
-    return { id, name: m.name, scripts: (m.client && m.client.scripts) || [] };
+    return {
+      id, name: m.name,
+      nameEn: m.nameEn || '', tagline: m.tagline || '',
+      scripts: (m.client && m.client.scripts) || [],
+      nav: (m.client && m.client.nav) || [],
+    };
   }) });
 });
 // 游戏前端资产：games/<id>/public/ 下的面板片段与插件脚本（no-cache 协商缓存，部署即生效）

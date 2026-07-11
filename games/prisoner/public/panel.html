@@ -1,11 +1,5 @@
-<!-- 囚徒困境 · 前端面板片段（由平台壳按 data-slot 注入：subnav→页头、panel→主区、overlays→body） -->
-<nav class="tabs subnav hidden" data-slot="subnav">
-  <button class="tab active" data-ptab="pplay">试玩</button>
-  <button class="tab" data-ptab="pleaderboard">天梯榜</button>
-  <button class="tab" data-ptab="pmybot">我的囚徒</button>
-  <button class="tab" data-ptab="pguide">Agent 指南</button>
-</nav>
-
+<!-- 囚徒困境 · 前端面板片段（由平台壳按 data-slot 注入：panel→#gameHost、overlays→body）
+     二级导航（试玩/天梯榜/我的囚徒/Agent 指南）由壳按 manifest.client.nav 统一渲染在侧栏，此处不再自带 subnav。 -->
 <section id="section-prisoner" class="section-panel" data-slot="panel">
     <!-- 试玩（人机对战，不限回合数） -->
     <div id="ptab-pplay" class="ptab-panel active">

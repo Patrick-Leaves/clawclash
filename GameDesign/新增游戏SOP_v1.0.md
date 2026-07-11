@@ -45,7 +45,7 @@ games/<id>/
 │   ├── play_session.js    # 试玩无状态重放（可选，看试玩形态）
 │   └── builtins.js        # 内置对手查找 findBuiltin（UMD）
 └── public/
-    ├── panel.html         # 前端面板片段（data-slot 三段）
+    ├── panel.html         # 前端面板片段（data-slot 两段：panel + overlays）
     └── app.js             # 前端插件（IIFE + Platform.registerGame）
 ```
 
@@ -95,6 +95,8 @@ const SCORED_LIMIT = 10;
 module.exports = {
   id: '<id>',
   name: '<中文名>',
+  nameEn: '<英文名>',           // 首页卡片副标题 / 海报占位
+  tagline: '<一句话简介>',      // 首页卡片
   noun: '<选手名词>',
   keyParam: '<id>_key',
   idField: '<id>Id',            // 对外 JSON 的 id 字段名
@@ -104,7 +106,16 @@ module.exports = {
   leaderboardTtlMs: 15000,
   guidePath: '/games/<id>/agent-guide',   // 新游戏直接用规范路径即可（短路径见步骤 4 aliases）
   guideMarkdown: buildGuide({ scoredLimit: SCORED_LIMIT }),
-  client: { scripts: ['/games/<id>/app.js'] },  // 若有引擎打包，排在 app.js 之前（见步骤 8）
+  client: {
+    scripts: ['/games/<id>/app.js'],  // 若有引擎打包，排在 app.js 之前（见步骤 8）
+    // 二级导航：壳按此渲染侧栏竖排导航；key 对应 app.js 的 tab 名（showTab 派发），auth:true 项未登录点击弹注册
+    nav: [
+      { key: '<id>play', label: '试玩' },
+      { key: '<id>leaderboard', label: '天梯榜' },
+      { key: '<id>mybot', label: '我的<选手名词>', auth: true },
+      { key: '<id>guide', label: 'Agent 指南' },
+    ],
+  },
 
   limits: {          // 各任务父进程硬超时（ms）——按最坏情况给足余量
     smoke: 90000,    // 6 场烟雾
@@ -227,18 +238,19 @@ const challenge = {
 
 ## 6. public/ —— 前端插件
 
-**panel.html**：三个 `data-slot` 顶层节点，壳按槽注入：
+**panel.html**：两个 `data-slot` 顶层节点，壳按槽注入（**二级导航不再写在此**——改由 manifest `client.nav` 声明，壳统一渲染在侧栏）：
 ```html
-<nav class="subnav" data-slot="subnav"> …二级导航 tab 按钮（data-<attr>）… </nav>
 <div class="section-panel" data-slot="panel"> …各 tab 面板（id="<前缀>-<tab名>"）… </div>
 <div data-slot="overlays"> …本游戏专属弹窗（挂到 body，不随面板隐藏）… </div>
 ```
 
-**app.js**：整体 IIFE，尾部 `Platform.registerGame({ id, init, onShow, showMine, defaultView, onAuthChange })`。要点：
+**app.js**：整体 IIFE，尾部 `Platform.registerGame({ id, init, onShow, showTab, showMine, defaultView, onAuthChange })`。要点：
 
 - **DOM 命名空间**：IIFE 只隔离 JS；document 级的 data 属性/class/id 必须带游戏前缀（现占用：钳王 `tab`/`tab-panel`、囚徒 `ptab`、暗战 `dqtab`）。
-- 能复用的都复用壳组件：`makeTabs`（二级导航+登录守卫）、`renderLeaderboardRows`、`renderVersionList`、`overviewCardHtml`/`accessCardHtml`+`bindAccessCard`、`verifyBannerHtml`+`bindVerifyBanner`、`openCreatePlayer`/`openAvatarEditorShared`、`myPlayer(gid)`、`popup/toast/copyText/apiFetch/esc/avatarHtml/rankLabel`。真正要自己写的只有：试玩交互（棋盘渲染/操作）与回放视图。
+- **二级导航由壳渲染**：`makeTabs(cfg)` 返回的 `show(key)` 注册为插件 `showTab`，供壳侧栏点击派发；`makeTabs` 本身**不再绑导航按钮**（按钮由壳画，登录守卫在壳的 `dispatchNav`）。`client.nav` 的每个 `key` 必须与 `makeTabs` 的 tab 名一致。
+- 能复用的都复用壳组件：`makeTabs`（二级 tab 切换）、`renderLeaderboardRows`、`renderVersionList`、`overviewCardHtml`/`accessCardHtml`+`bindAccessCard`、`verifyBannerHtml`+`bindVerifyBanner`、`openCreatePlayer`/`openAvatarEditorShared`、`myPlayer(gid)`、`popup/toast/copyText/apiFetch/esc/avatarHtml/rankLabel`。真正要自己写的只有：试玩交互（棋盘渲染/操作）与回放视图。棋类若要试玩终局动效，复用壳样式 `.result-pop`/`.confetti-box`（参照钳王/暗棋，overlay 用带前缀 id）。
 - 登录态缓存失效放 `onAuthChange`；建号/换头像后 `await refreshMe()` 再重画。
+- （可选）首页卡片海报：默认落回壳的通用渐变占位；若要主题化插画，在壳 `gamePosterSvg` 按 `game.id` 加一个分支（参照钳王/囚徒/暗棋）。
 
 ---
 
@@ -249,7 +261,7 @@ const challenge = {
 const ids = ['clawclash', 'prisoner', 'darkchess', '<id>'];
 ```
 
-到此新游戏自动获得：全套 22 条平台 API（`/api/games/<id>/…`）、统一数据层（零 schema 工作）、天梯微缓存、结算与并发保护、指南路由、`/api/me` 里的选手概要、前端主导航入口与面板注入。
+到此新游戏自动获得：全套 22 条平台 API（`/api/games/<id>/…`）、统一数据层（零 schema 工作）、天梯微缓存、结算与并发保护、指南路由、`/api/me` 里的选手概要、首页卡片与侧栏「当前游戏」入口、二级导航（按 `client.nav`）与面板注入。
 
 ---
 
@@ -278,7 +290,7 @@ route('GET', '/<id>-bots.js', (req, res) => sendCached(req, res, <ID>_BOTS_JS, '
 - [ ] （建议）在 `test/api.e2e.test.js` 模式上补一条本游戏的注册→建号→提交→挑战冒烟。
 
 **手动清单**（`node server.js` 后过一遍）：
-- [ ] 启动日志出现新游戏名；主导航出现且面板/二级导航正常切换；
+- [ ] 启动日志出现新游戏名；首页出现该游戏卡片（名/英文名/简介，点卡进入）；侧栏「当前游戏」下拉可切到本游戏、竖排二级导航（按 `client.nav`）正常切换、未登录点「我的X」弹注册；
 - [ ] 注册 → 建选手（名称查重、头像上传/预设）→「我的」页概览/密钥掩码/一键 Prompt；
 - [ ] 用 Prompt 里的 key 走 Agent 链路：`code/submit` 烟雾失败（提交个 `throw` 脚本验证 422 明细）→ 提交正常脚本 → v1 发布；
 - [ ] 两个账号互相 `challenge`：结果/rpChange/scored 正确；打满 `scoredLimit` 场后转练习赛（`scored:false`）；

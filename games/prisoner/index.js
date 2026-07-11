@@ -12,6 +12,8 @@ const SCORED_LIMIT = 10;
 module.exports = {
   id: 'prisoner',
   name: '囚徒困境',
+  nameEn: 'Dilemma',
+  tagline: '900–1100 回合的重复博弈，合作与背叛之间的长线心理战。',
   noun: '囚徒',
   keyParam: 'prisoner_key',
   idField: 'prisonerId',
@@ -22,7 +24,16 @@ module.exports = {
   guidePath: '/agent-guide-prisoner',
   guideMarkdown: buildGuide({ minRounds: MIN_ROUNDS, maxRounds: MAX_ROUNDS, scoredLimit: SCORED_LIMIT }),
   // 前端插件（P4）：/builtin-bots.js 提供训练囚徒的浏览器本地执行（与钳王共享，去重加载）
-  client: { scripts: ['/builtin-bots.js', '/games/prisoner/app.js'] },
+  // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录）
+  client: {
+    scripts: ['/builtin-bots.js', '/games/prisoner/app.js'],
+    nav: [
+      { key: 'pplay', label: '试玩' },
+      { key: 'pleaderboard', label: '天梯榜' },
+      { key: 'pmybot', label: '我的囚徒', auth: true },
+      { key: 'pguide', label: 'Agent 指南' },
+    ],
+  },
   minRounds: MIN_ROUNDS,
   maxRounds: MAX_ROUNDS,
 

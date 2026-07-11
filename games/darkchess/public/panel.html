@@ -1,13 +1,7 @@
-<!-- 象棋暗战 · 前端面板片段（由平台壳按 data-slot 注入：subnav→页头、panel→主区、overlays→body）
+<!-- 象棋暗战 · 前端面板片段（由平台壳按 data-slot 注入：panel→#gameHost、overlays→body）
+     二级导航（试玩/天梯榜/我的棋手/Agent 指南）由壳按 manifest.client.nav 统一渲染在侧栏，此处不再自带 subnav。
      命名空间隔离：本游戏专属的 JS 查询属性/类名一律加 dq 前缀（data-dqtab / .dqtab-panel /
-     data-dqplaymode / dq* id），避免与 clawclash 的 document 级选择器（.tab[data-tab] 等）互相误伤。 -->
-<nav class="tabs subnav hidden" data-slot="subnav">
-  <button class="tab active" data-dqtab="dqplay">试玩</button>
-  <button class="tab" data-dqtab="dqleaderboard">天梯榜</button>
-  <button class="tab" data-dqtab="dqmybot">我的棋手</button>
-  <button class="tab" data-dqtab="dqguide">Agent 指南</button>
-</nav>
-
+     data-dqplaymode / dq* id），避免与 clawclash 的 document 级选择器互相误伤。 -->
 <div class="section-panel" data-slot="panel">
   <!-- ===== 人机试玩 ===== -->
   <div id="dqtab-dqplay" class="dqtab-panel active">
@@ -150,6 +144,20 @@
 </div>
 
 <div data-slot="overlays">
+  <!-- ===== 试玩终局动画（与钳王同款：全屏弹层 + 撒彩带，复用壳 .result-pop/.confetti-box）===== -->
+  <div class="modal-mask hidden" id="dqResultOverlay">
+    <div id="dqConfettiBox" class="confetti-box"></div>
+    <div class="result-pop" id="dqResultPop">
+      <div class="rp-emoji" id="dqRpEmoji">🎉</div>
+      <h2 id="dqRpTitle">胜利！</h2>
+      <p class="modal-sub" id="dqRpSub"></p>
+      <div class="popup-actions">
+        <button class="primary" id="dqRpAgain">再来一局</button>
+        <button id="dqRpClose">查看棋盘</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== 对局回放 弹窗（动画逐步重现：翻棋渐次揭示 + 吃子高亮）===== -->
   <div class="modal-mask hidden" id="dqReplayModal">
     <div class="modal modal-wide">

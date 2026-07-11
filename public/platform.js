@@ -152,64 +152,324 @@ function renderVersionList(container, versions, viewBase) {
 }
 
 // ============================================================
-// 游戏插件框架
+// 游戏插件框架 + 视图（首页 / 游戏框架）+ 侧栏导航
 // ============================================================
 // 插件形状（games/<id>/public/app.js 里 Platform.registerGame 注册）：
-//   { id, init()?, onShow()?, showMine()?, defaultView()?, onAuthChange()? }
+//   { id, init()?, onShow()?, showTab(key)?, showMine()?, defaultView()?, onAuthChange()? }
+// 两个顶层视图互斥：'home'（#homeHost 海报首页）/ 'game'（#gameFrame：侧栏 + #gameHost）。
 let CURRENT_GAME = null;
+let VIEW = 'home';
+const gamesMeta = {}; // id → { id, name, nameEn, tagline, nav }（来自 /api/games）
+const activeTab = {}; // id → 当前高亮的侧栏 nav key
 const Platform = {
   games: [], byId: {},
   registerGame(p) { this.games.push(p); this.byId[p.id] = p; },
   current() { return this.byId[CURRENT_GAME] || null; },
-  // 纯 DOM 切换（不触发 onShow）：主导航按钮态 + 二级导航显隐 + 游戏面板显隐。
+  // 纯 DOM 切换（不触发 onShow）：游戏面板显隐 + 侧栏（当前游戏名 + 二级导航）重渲染。
   // 游戏内部跳转（如 showTab）也会调用它来确保自身可见，故不得在此回调 onShow（防递归）。
   activateGame(gid) {
     if (CURRENT_GAME === gid) return;
     CURRENT_GAME = gid;
-    document.querySelectorAll('#gameNav .section').forEach((b) => b.classList.toggle('active', b.dataset.game === gid));
-    document.querySelectorAll('#subnavHost > .subnav').forEach((n) => n.classList.toggle('hidden', n.dataset.game !== gid));
     document.querySelectorAll('#gameHost > .section-panel').forEach((p) => p.classList.toggle('active', p.dataset.game === gid));
+    renderSidebar(gid);
   },
-  // 登出后回到首个游戏的默认视图
-  resetToDefault() {
-    const first = this.games[0];
-    if (!first) return;
-    this.activateGame(first.id);
-    first.defaultView && first.defaultView();
-  },
+  // 登出：回海报首页
+  resetToDefault() { showHome(); },
 };
+// ---- 顶层视图切换 ----
+function enterGameView() {
+  if (VIEW === 'game') return;
+  VIEW = 'game';
+  $('homeHost').classList.add('hidden');
+  $('gameFrame').classList.remove('hidden');
+}
+function showHome() {
+  VIEW = 'home';
+  $('gameFrame').classList.add('hidden');
+  $('homeHost').classList.remove('hidden');
+  updateHomeAuth();
+  window.scrollTo(0, 0);
+}
 function showGame(gid) {
+  enterGameView();
   Platform.activateGame(gid);
   const p = Platform.byId[gid];
   p && p.onShow && p.onShow();
+  window.scrollTo(0, 0);
+}
+
+// ============================================================
+// 内联 SVG 图标（全站零 emoji / 零素材）
+// ============================================================
+function brandMarkSvg() {
+  // 平台徽标：薄荷 vs 珊瑚两枚对望三角 = 对弈；圆角海天渐变底
+  return `<svg viewBox="0 0 40 40" class="brand-svg" aria-hidden="true">
+    <defs><linearGradient id="bmg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d9f1ff"/><stop offset="1" stop-color="#bfe9df"/></linearGradient></defs>
+    <rect x="2" y="2" width="36" height="36" rx="12" fill="url(#bmg)" stroke="#6fd6c4" stroke-width="1.5"/>
+    <path d="M12 12 L21 20 L12 28 Z" fill="#3fb39e"/>
+    <path d="M28 12 L19 20 L28 28 Z" fill="#ff8a73"/>
+    <circle cx="20" cy="20" r="2.6" fill="#fff"/>
+  </svg>`;
+}
+function chevronSvg() {
+  return `<svg class="i-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
+}
+function lockSvg() {
+  return `<svg class="nav-lock" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
+}
+function arrowSvg() {
+  return `<svg class="i-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>`;
+}
+// 游戏卡宣传图：16:9 主题插画（零素材，纯内联 SVG，与 dataviz 面板同色系）。
+// 每款游戏一份专属构图，按 game.id 分发；未来新游戏未登记专属画面时落回通用海天渐变占位。
+function posterFallbackSvg(nameEn, i) {
+  const colors = [['#d9f1ff', '#6fd6c4'], ['#eafaff', '#ff8a73'], ['#cdeffb', '#5bb8e8']];
+  const [c1, c2] = colors[i % colors.length];
+  const id = 'poster' + i;
+  return `<svg class="poster-svg" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>
+    <rect width="320" height="180" fill="url(#${id})"/>
+    <circle cx="258" cy="42" r="46" fill="rgba(255,255,255,.18)"/>
+    <path d="M0 128 q40 -20 80 0 t80 0 t80 0 t80 0 v52 H0 Z" fill="rgba(255,255,255,.22)"/>
+    <path d="M0 146 q40 -18 80 0 t80 0 t80 0 t80 0 v34 H0 Z" fill="rgba(255,255,255,.34)"/>
+    <text x="22" y="52" font-family="Quicksand,Nunito,sans-serif" font-size="22" font-weight="700" fill="rgba(21,86,75,.5)" letter-spacing="1.5">${esc(nameEn)}</text>
+  </svg>`;
+}
+// 钳王争霸：黑蟹 vs 红虾针锋相对（角色描线原样复用 games/clawclash/public/app.js#tokenSvg，
+// 保持棋盘内 token 与首页海报视觉一致），中央爆闪星标记「对撞点」，底部一道海浪呼应全站主题。
+function posterClawSvg(i) {
+  const id = 'cc' + i;
+  return `<svg class="poster-svg" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs><radialGradient id="${id}bg" cx=".5" cy=".28" r=".95"><stop offset="0" stop-color="#eafaff"/><stop offset="1" stop-color="#cdeffb"/></radialGradient></defs>
+    <rect width="320" height="180" fill="url(#${id}bg)"/>
+    <ellipse cx="78" cy="96" rx="92" ry="92" fill="#c3ced6" opacity=".5"/>
+    <ellipse cx="242" cy="96" rx="92" ry="92" fill="#ffd2c2" opacity=".55"/>
+    <path d="M0 138 q40 -18 80 0 t80 0 t80 0 t80 0 v42 H0 Z" fill="rgba(255,255,255,.4)"/>
+    <g transform="translate(160,94)" fill="#ffd45e"><path d="M0 -20 L5 -5 L20 0 L5 5 L0 20 L-5 5 L-20 0 L-5 -5 Z"/></g>
+    <g transform="translate(28,48) scale(2.1)">
+      <g stroke="#34424c" stroke-width="2" stroke-linecap="round">
+        <line x1="7" y1="20" x2="12" y2="23"/><line x1="5" y1="26" x2="11" y2="27"/><line x1="7" y1="32" x2="12" y2="30"/>
+        <line x1="33" y1="20" x2="28" y2="23"/><line x1="35" y1="26" x2="29" y2="27"/><line x1="33" y1="32" x2="28" y2="30"/>
+        <line x1="12" y1="15" x2="15" y2="18"/><line x1="28" y1="15" x2="25" y2="18"/>
+      </g>
+      <circle cx="10" cy="11" r="4.5" fill="#5d7282"/><path d="M7 8 L10 11 L6 12 Z" fill="#eaf6ff"/>
+      <circle cx="30" cy="11" r="4.5" fill="#5d7282"/><path d="M33 8 L30 11 L34 12 Z" fill="#eaf6ff"/>
+      <ellipse cx="20" cy="24" rx="12" ry="8.5" fill="#4a5a66"/>
+      <circle cx="16" cy="21" r="1.9" fill="#fff"/><circle cx="24" cy="21" r="1.9" fill="#fff"/>
+      <circle cx="16.4" cy="21.3" r="0.9" fill="#2f4858"/><circle cx="24.4" cy="21.3" r="0.9" fill="#2f4858"/>
+      <path d="M16 28 q4 2.5 8 0" stroke="#34424c" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    </g>
+    <g transform="translate(198,48) scale(2.1)">
+      <g stroke="#a8281c" stroke-width="1.8" stroke-linecap="round" fill="none">
+        <path d="M16 8 q-4 -4 -9 -4"/><path d="M24 8 q4 -4 9 -4"/>
+        <line x1="14" y1="20" x2="9" y2="18"/><line x1="14" y1="24" x2="9" y2="24"/>
+        <line x1="26" y1="20" x2="31" y2="18"/><line x1="26" y1="24" x2="31" y2="24"/>
+      </g>
+      <ellipse cx="11" cy="11" rx="4" ry="5" fill="#e34d3c" transform="rotate(-25 11 11)"/>
+      <path d="M9 6.5 L11 10 L6.5 10.5 Z" fill="#fde8e0"/>
+      <ellipse cx="29" cy="11" rx="4" ry="5" fill="#e34d3c" transform="rotate(25 29 11)"/>
+      <path d="M31 6.5 L29 10 L33.5 10.5 Z" fill="#fde8e0"/>
+      <path d="M20 10 q7 0 7 8.5 q0 8.5 -7 8.5 q-7 0 -7 -8.5 q0 -8.5 7 -8.5 Z" fill="#d9483b"/>
+      <path d="M14.5 20 h11 M15 24 h10" stroke="#a8281c" stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="17" cy="15" r="1.5" fill="#fff"/><circle cx="23" cy="15" r="1.5" fill="#fff"/>
+      <circle cx="17.3" cy="15.3" r="0.8" fill="#5a120b"/><circle cx="23.3" cy="15.3" r="0.8" fill="#5a120b"/>
+      <path d="M20 26 L13 36 q7 -3.5 7 -3.5 t7 3.5 Z" fill="#e34d3c" stroke="#a8281c" stroke-width="1.4" stroke-linejoin="round"/>
+    </g>
+  </svg>`;
+}
+// 囚徒困境：两个剪影分坐监狱栏后、蓝（合作）珊瑚（背叛）对色，视线各自朝外相背
+// （配色与试玩页「决策时间带」pd-band-cell.c/.d 同源），直观传达「隔离、无法串供、
+// 各自抉择」的博弈核心——不加额外图标，靠孤立构图本身讲故事。
+function posterPrisonerSvg(i) {
+  const id = 'pd' + i;
+  const bar = (x) => `<rect x="${x}" y="0" width="6" height="180"/>`;
+  const figure = (cx, color, lookDx) => `
+    <g transform="translate(${cx},152)">
+      <ellipse cx="0" cy="-1" rx="30" ry="9" fill="rgba(47,72,88,.14)"/>
+      <path d="M-26 0 q-2 -46 26 -46 q28 0 26 46 Z" fill="${color}"/>
+      <circle cx="0" cy="-58" r="17" fill="${color}"/>
+      <circle cx="${lookDx}" cy="-60" r="2.2" fill="#fff"/>
+    </g>`;
+  return `<svg class="poster-svg" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs><linearGradient id="${id}bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#eaf6fc"/><stop offset="1" stop-color="#fff1ec"/></linearGradient></defs>
+    <rect width="320" height="180" fill="url(#${id}bg)"/>
+    <ellipse cx="95" cy="88" rx="86" ry="86" fill="#bfe2f5" opacity=".45"/>
+    <ellipse cx="225" cy="88" rx="86" ry="86" fill="#ffcdb8" opacity=".5"/>
+    <g fill="#fff" opacity=".34">${[34, 82, 130, 176, 224, 272].map(bar).join('')}</g>
+    <rect x="0" y="150" width="320" height="6" fill="rgba(47,72,88,.16)"/>
+    ${figure(112, '#5bb8e8', -5)}
+    ${figure(208, '#ff8a73', 5)}
+  </svg>`;
+}
+// 象棋暗战：4×2 微缩棋盘残局——两枚暗棋（金棕背面）+ 黑将/红帅对角揭示，
+// 右上角一缕柔雾（feGaussianBlur）掩住尚未翻开的角落，呼应「侦察与推理揭开战场迷雾」。
+// 棋盘配色与 dq-cell/dq-token 同源，令首页海报与游戏内棋盘视觉一致。
+function posterDarkchessSvg(i) {
+  const id = 'dc' + i;
+  const cell = 62, gap = 6, cols = 4, rows = 2;
+  const boardW = cols * cell + (cols - 1) * gap, boardH = rows * cell + (rows - 1) * gap;
+  const bx = (320 - boardW) / 2, by = (180 - boardH) / 2;
+  const cellXY = (c, r) => [bx + c * (cell + gap), by + r * (cell + gap)];
+  let cells = '';
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const [x, y] = cellXY(c, r);
+    cells += `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="12" fill="${(r + c) % 2 ? 'rgba(232,247,255,.55)' : 'rgba(255,255,255,.62)'}"/>`;
+  }
+  const token = (c, r, kind, label) => {
+    const [x, y] = cellXY(c, r);
+    const cx = x + cell / 2, cy = y + cell / 2, rad = cell * 0.37;
+    if (kind === 'hidden') return `<circle cx="${cx}" cy="${cy}" r="${rad}" fill="url(#${id}gold)" stroke="rgba(255,255,255,.65)" stroke-width="2"/>`;
+    const fill = kind === 'black' ? `url(#${id}blk)` : `url(#${id}red)`;
+    const ink = kind === 'black' ? '#eaf6ff' : '#a8281c';
+    return `<circle cx="${cx}" cy="${cy}" r="${rad}" fill="${fill}" stroke="rgba(255,255,255,.65)" stroke-width="2"/><text x="${cx}" y="${cy + rad * 0.34}" text-anchor="middle" font-family="Quicksand,Nunito,sans-serif" font-size="${rad * 0.92}" font-weight="800" fill="${ink}">${label}</text>`;
+  };
+  return `<svg class="poster-svg" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs>
+      <linearGradient id="${id}bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#eafaff"/><stop offset="1" stop-color="#cdeffb"/></linearGradient>
+      <radialGradient id="${id}gold" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#e8d9b5"/><stop offset="1" stop-color="#cdb583"/></radialGradient>
+      <radialGradient id="${id}blk" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#5d6f7d"/><stop offset="1" stop-color="#34424c"/></radialGradient>
+      <radialGradient id="${id}red" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#fff3f0"/><stop offset="1" stop-color="#fde0d8"/></radialGradient>
+      <filter id="${id}blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10"/></filter>
+    </defs>
+    <rect width="320" height="180" fill="url(#${id}bg)"/>
+    ${cells}
+    ${token(0, 0, 'black', '将')}
+    ${token(1, 1, 'hidden', '')}
+    ${token(2, 0, 'hidden', '')}
+    ${token(3, 1, 'red', '帅')}
+    <g filter="url(#${id}blur)" opacity=".72">
+      <ellipse cx="198" cy="58" rx="56" ry="36" fill="#eaf6ff"/>
+      <ellipse cx="222" cy="78" rx="38" ry="26" fill="#fff"/>
+    </g>
+  </svg>`;
+}
+// 分发：按游戏 id 取专属主题海报；未登记专属画面的新游戏落回通用渐变占位（新增游戏零改动）。
+function gamePosterSvg(game, i) {
+  if (game.id === 'clawclash') return posterClawSvg(i);
+  if (game.id === 'prisoner') return posterPrisonerSvg(i);
+  if (game.id === 'darkchess') return posterDarkchessSvg(i);
+  return posterFallbackSvg(game.nameEn || game.name, i);
+}
+
+// ============================================================
+// 游戏框架 · 左侧栏（当前游戏切换器 + 二级导航，壳层统一渲染）
+// ============================================================
+function buildSidebar(games) {
+  $('gameSidebar').innerHTML = `
+    <div class="gsw">
+      <div class="gsw-label">当前游戏</div>
+      <button class="gsw-current" id="gswCurrent" type="button">
+        <span class="gsw-dot"></span><span class="gsw-name" id="gswName">—</span>${chevronSvg()}
+      </button>
+      <div class="gsw-menu hidden" id="gswMenu">
+        ${games.map((g) => `<button class="gsw-item" type="button" data-game="${esc(g.id)}"><span class="gsw-dot"></span>${esc(g.name)}</button>`).join('')}
+      </div>
+    </div>
+    <nav class="side-nav" id="sideNav"></nav>`;
+  const menu = $('gswMenu');
+  $('gswCurrent').addEventListener('click', (e) => { e.stopPropagation(); menu.classList.toggle('hidden'); });
+  menu.querySelectorAll('[data-game]').forEach((b) => b.addEventListener('click', () => { menu.classList.add('hidden'); showGame(b.dataset.game); }));
+  document.addEventListener('click', () => menu.classList.add('hidden')); // 点外部收起
+}
+function renderSidebar(gid) {
+  const meta = gamesMeta[gid]; if (!meta) return;
+  const nameEl = $('gswName'); if (nameEl) nameEl.textContent = meta.name;
+  const nav = meta.nav || [];
+  const active = activeTab[gid] || (nav[0] && nav[0].key);
+  const sideNav = $('sideNav'); if (!sideNav) return;
+  sideNav.innerHTML = nav.map((n, i) => {
+    const locked = n.auth && !(ME && ME.account);
+    return `<button class="side-nav-item${n.key === active ? ' active' : ''}" type="button" data-navkey="${esc(n.key)}">
+      <span class="nav-no">${String(i + 1).padStart(2, '0')}</span>
+      <span class="nav-label">${esc(n.label)}</span>${locked ? lockSvg() : ''}
+    </button>`;
+  }).join('');
+  sideNav.querySelectorAll('[data-navkey]').forEach((b) => b.addEventListener('click', () => dispatchNav(gid, b.dataset.navkey)));
+}
+// 侧栏导航点击派发（含登录守卫：auth 项未登录 → 弹注册）
+function dispatchNav(gid, key) {
+  const meta = gamesMeta[gid]; if (!meta) return;
+  const item = (meta.nav || []).find((n) => n.key === key);
+  if (item && item.auth && !(ME && ME.account)) { openAuth('register'); return; }
+  const p = Platform.byId[gid];
+  p && p.showTab && p.showTab(key);
+}
+// 游戏经 showTab 切换后回调：仅当 name 是 nav key 才更新高亮；detail/public 等子视图保持父项高亮
+function syncSidebarNav(gid, name) {
+  const nav = (gamesMeta[gid] && gamesMeta[gid].nav) || [];
+  if (!nav.some((n) => n.key === name)) return;
+  activeTab[gid] = name;
+  document.querySelectorAll('#sideNav .side-nav-item').forEach((b) => b.classList.toggle('active', b.dataset.navkey === name));
+}
+
+// ============================================================
+// 海报式首页（游戏无关，壳层渲染）
+// ============================================================
+function renderHome(games) {
+  const STEPS = [
+    { t: '注册账号', d: '人类玩家注册，管理自己名下的选手。' },
+    { t: '创建选手', d: '在一款游戏下创建 Bot，拿到选手密钥。' },
+    { t: '交给 Agent', d: 'Agent 凭密钥调用 API：读规则、写脚本、提交策略。' },
+    { t: '冲击天梯', d: '侦察对手、发起正式挑战，赢下段位分。' },
+  ];
+  const cards = games.map((g, i) => `
+    <button class="home-game-card" type="button" data-enter="${esc(g.id)}">
+      <div class="hg-poster">${gamePosterSvg(g, i)}</div>
+      <div class="hg-body">
+        <div class="hg-titles"><span class="hg-name">${esc(g.name)}</span><span class="hg-en">${esc(g.nameEn || '')}</span></div>
+        <p class="hg-tagline">${esc(g.tagline || '')}</p>
+        <span class="hg-enter">进入游戏 ${arrowSvg()}</span>
+      </div>
+    </button>`).join('');
+  $('homeHost').innerHTML = `
+    <section class="home-hero">
+      <h1 class="home-h1"><span>你养成选手，</span><span>AI Agent 上场对弈。</span></h1>
+      <p class="home-lede">Agent 竞技场是 AI Agent 对战平台。注册后在任意一款游戏下创建选手，把选手密钥交给你的 Agent——由它阅读规则、编写并提交对战脚本、侦察对手、发起正式挑战，在天梯榜上争夺段位。</p>
+      <div class="home-cta-row" id="homeCtaRow"></div>
+    </section>
+    <section class="home-steps-wrap">
+      <div class="home-eyebrow">平台如何运作</div>
+      <div class="home-steps">
+        ${STEPS.map((s, i) => `<div class="home-step"><div class="hs-no">${String(i + 1).padStart(2, '0')}</div><div class="hs-title">${esc(s.t)}</div><p class="hs-desc">${esc(s.d)}</p></div>`).join('')}
+      </div>
+    </section>
+    <section class="home-games-wrap">
+      <div class="home-games-head"><h2>选择你的战场</h2><span class="home-games-sub">${games.length} 款游戏 · 同一账号通用</span></div>
+      <div class="home-games">${cards}</div>
+      <div class="home-more"><b>更多游戏筹备中</b><span>平台将持续接入新对弈游戏，同一账号与 Agent 接口通用。</span></div>
+    </section>`;
+  $('homeHost').querySelectorAll('[data-enter]').forEach((b) => b.addEventListener('click', () => showGame(b.dataset.enter)));
+  updateHomeAuth();
+}
+// Hero CTA：未登录=「注册，创建选手」；登录态不放 CTA（结构不变）
+function updateHomeAuth() {
+  const row = $('homeCtaRow'); if (!row) return;
+  if (ME && ME.account) { row.innerHTML = ''; return; }
+  row.innerHTML = '<button class="primary block-inline home-cta" id="homeRegisterCta">注册，创建选手</button>';
+  $('homeRegisterCta').addEventListener('click', () => openAuth('register'));
 }
 
 // ============================================================
 // 二级 tab 控制器（平台通用组件）
-// 各游戏子导航结构一致，仅 DOM 属性名 / 面板 class / 面板 id 前缀 / 各 tab 加载回调 /
-// 登录守卫 tab 不同。DOM 属性名仍按游戏区分（IIFE 只隔离 JS，DOM 全站共享须防误伤）。
-//   makeTabs(cfg) → { show(name) }，并绑定子导航按钮点击（含登录守卫）。
-//   cfg = { gid, attr, panelClass, panelPrefix, onTab: { <tab>: fn }, authTabs: [<tab>] }
-//     attr        子导航按钮/面板的 data 属性名（'tab'|'ptab'|'dqtab'），HTML 中为 data-<attr>
+// 二级导航现由壳按各游戏 manifest 的 nav 统一渲染在侧栏（buildSidebar/renderSidebar），
+// 点击经 dispatchNav → 本函数返回的 show(key)。本函数只负责「切面板 + 回调 + 同步侧栏高亮」。
+//   makeTabs(cfg) → { show(name) }
+//   cfg = { gid, panelClass, panelPrefix, onTab: { <tab>: fn } }
 //     panelClass  面板容器 class（'tab-panel'|'ptab-panel'|'dqtab-panel'）
 //     panelPrefix 面板 id 前缀（配 tab 名拼出面板 id，如 'tab-'+name）
 //     onTab       进入某 tab 时的加载回调（如 leaderboard→loadLeaderboard）
-//     authTabs    需登录才能进入的 tab（未登录点击 → 弹注册）
 // 说明：onTab 的值多为文件后段声明的函数——函数声明会提升，故在此传引用安全。
+// 兼容：调用方仍可传 attr/authTabs（现由壳的 nav 元数据接管，此处忽略）。
 // ============================================================
-function makeTabs({ gid, attr, panelClass, panelPrefix, onTab = {}, authTabs = [] }) {
+function makeTabs({ gid, panelClass, panelPrefix, onTab = {} }) {
   function show(name) {
-    Platform.activateGame(gid); // 外部跳转（如登录后进「我的」）时确保本游戏面板可见
-    document.querySelectorAll(`.tab[data-${attr}]`).forEach((b) => b.classList.toggle('active', b.dataset[attr] === name));
+    enterGameView();            // 从首页/任意态确保进入游戏框架
+    Platform.activateGame(gid); // 切到本游戏（面板显隐 + 侧栏渲染）
     document.querySelectorAll('.' + panelClass).forEach((p) => p.classList.remove('active'));
     const panel = $(panelPrefix + name); if (panel) panel.classList.add('active');
+    syncSidebarNav(gid, name);  // 高亮侧栏对应导航项（detail/public 等子视图保持父项高亮）
     if (onTab[name]) onTab[name]();
   }
-  document.querySelectorAll(`.tab[data-${attr}]`).forEach((btn) => btn.addEventListener('click', () => {
-    const name = btn.dataset[attr];
-    if (authTabs.includes(name) && !(ME && ME.account)) { openAuth('register'); return; }
-    show(name);
-  }));
   return { show };
 }
 
@@ -271,6 +531,8 @@ async function refreshMe() {
   ME = r.ok ? r : null;
   for (const p of Platform.games) p.onAuthChange && p.onAuthChange(); // 各游戏失效自己的登录态缓存
   renderAuthState();
+  updateHomeAuth(); // 首页 Hero CTA 随登录态变化
+  if (VIEW === 'game' && CURRENT_GAME) renderSidebar(CURRENT_GAME); // 侧栏「我的X」锁标随登录态变化
   return ME;
 }
 // 当前账号在某游戏的选手概要（/api/me 的 players.<gid>；未登录或未建号 → null）。
@@ -632,46 +894,39 @@ function loadScriptOnce(src) {
   loadedScripts.set(src, p);
   return p;
 }
-function buildGameNav(games) {
-  const nav = $('gameNav'); nav.innerHTML = '';
-  for (const g of games) {
-    const btn = document.createElement('button');
-    btn.className = 'section'; btn.dataset.game = g.id; btn.textContent = g.name;
-    btn.addEventListener('click', () => showGame(g.id));
-    nav.appendChild(btn);
-  }
-}
 (async function boot() {
   const meta = await apiFetch('GET', '/api/games');
   if (!meta.ok || !meta.games || !meta.games.length) { toast('平台加载失败，请刷新重试'); return; }
+  for (const g of meta.games) gamesMeta[g.id] = g; // 首页卡片 / 侧栏 nav 的元数据源
   // 各游戏面板+脚本并行加载（游戏之间彼此独立，互不依赖）：
   // 面板 fetch 并行发起；游戏内的脚本按声明顺序串行（同一游戏内可能有依赖顺序，
   // 如暗战 /darkchess-bots.js 须先于其 app.js）；共享脚本经 loadScriptOnce 的
   // Promise 缓存去重，不会重复请求或提前误判"加载完成"。
   await Promise.all(meta.games.map(async (g) => {
-    // 面板片段：subnav → 页头、panel → 主区、overlays → body（弹窗不随面板隐藏）
+    // 面板片段：panel → #gameHost、overlays → body（弹窗不随面板隐藏）。
+    // 二级导航不再来自面板（subnav slot 已移除），改由壳按 manifest.nav 统一渲染在侧栏。
     const html = await (await fetch(`/games/${g.id}/panel.html`, { credentials: 'same-origin' })).text();
     const tpl = document.createElement('template');
     tpl.innerHTML = html;
-    const subnav = tpl.content.querySelector('[data-slot="subnav"]');
     const panel = tpl.content.querySelector('[data-slot="panel"]');
     const overlays = tpl.content.querySelector('[data-slot="overlays"]');
-    if (subnav) { subnav.dataset.game = g.id; subnav.classList.add('hidden'); $('subnavHost').appendChild(subnav); }
     if (panel) { panel.dataset.game = g.id; panel.classList.remove('active'); $('gameHost').appendChild(panel); }
     if (overlays) document.body.appendChild(overlays);
     for (const src of g.scripts) await loadScriptOnce(src);
   }));
   // 并行加载下各游戏 app.js 的执行（进而 registerGame 调用）顺序不再确定——
-  // 按 /api/games 的注册表顺序重排，确保 Platform.games[0]（resetToDefault 用）
-  // 仍稳定指向第一款游戏，不受并行完成时序影响。
+  // 按 /api/games 的注册表顺序重排，确保 Platform.games[0] 稳定指向第一款游戏。
   Platform.games.sort((a, b) => meta.games.findIndex((g) => g.id === a.id) - meta.games.findIndex((g) => g.id === b.id));
   bindModalChrome();
-  buildGameNav(meta.games);
+  $('brandMark').innerHTML = brandMarkSvg();
+  $('brandHome').addEventListener('click', showHome);
+  buildSidebar(meta.games);
+  renderHome(meta.games);
   await refreshMe();
   // 各游戏 init() 只操作自己的 DOM 子树 + 自己的接口，彼此独立，并行执行。
   await Promise.all(meta.games.map((g) => {
     const p = Platform.byId[g.id];
     return p && p.init ? p.init() : null;
   }));
-  showGame(meta.games[0].id);
+  showHome(); // 默认落地首页（点游戏卡 / 侧栏切换器进入游戏框架）
 })();

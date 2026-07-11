@@ -442,10 +442,8 @@ function pdPlayRender() {
 // ============================================================
 Platform.registerGame({
   id: 'prisoner',
-  onShow() {
-    const active = document.querySelector('.tab[data-ptab].active');
-    showPTab(active ? active.dataset.ptab : 'pleaderboard');
-  },
+  showTab: showPTab,                // 供壳侧栏导航派发（key: pplay/pleaderboard/pmybot/pguide）
+  onShow() { showPTab('pleaderboard'); },
   showMine() { showPTab('pmybot'); },
   defaultView() { showPTab('pplay'); },
 });

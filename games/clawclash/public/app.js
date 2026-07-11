@@ -939,10 +939,8 @@ Platform.registerGame({
     await loadTemplates();
     updateUndoBtn();
   },
-  onShow() {
-    const active = document.querySelector('.tab[data-tab].active');
-    showTab(active ? active.dataset.tab : 'play');
-  },
+  showTab,                          // 供壳侧栏导航派发（key: play/leaderboard/mybot/guide）
+  onShow() { showTab('play'); },
   showMine() { showTab('mybot'); },
   defaultView() { showTab('play'); },
 });

@@ -1,11 +1,5 @@
-<!-- 钳王争霸 · 前端面板片段（由平台壳按 data-slot 注入：subnav→页头、panel→主区、overlays→body） -->
-<nav class="tabs subnav hidden" data-slot="subnav">
-  <button class="tab active" data-tab="play">试玩</button>
-  <button class="tab" data-tab="leaderboard">天梯榜</button>
-  <button class="tab" data-tab="mybot">我的棋手</button>
-  <button class="tab" data-tab="guide">Agent 指南</button>
-</nav>
-
+<!-- 钳王争霸 · 前端面板片段（由平台壳按 data-slot 注入：panel→#gameHost、overlays→body）
+     二级导航（试玩/天梯榜/我的棋手/Agent 指南）由壳按 manifest.client.nav 统一渲染在侧栏，此处不再自带 subnav。 -->
 <div class="section-panel" data-slot="panel">
   <!-- ===== 人机试玩 ===== -->
   <section id="tab-play" class="tab-panel active">
@@ -223,7 +217,7 @@
 
   <!-- ===== 试玩终局动画 ===== -->
   <div class="modal-mask hidden" id="resultOverlay">
-    <div id="confettiBox"></div>
+    <div id="confettiBox" class="confetti-box"></div>
     <div class="result-pop" id="resultPop">
       <div class="rp-emoji" id="rpEmoji">🎉</div>
       <h2 id="rpTitle">胜利！</h2>

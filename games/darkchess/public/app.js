@@ -661,11 +661,59 @@ function dqRenderStatus() {
   $('dqPlyIndicator').textContent = dqState.history.length ? `第 ${dqState.history.length} 手` : '—';
 }
 
+// ---- 试玩终局动效（与钳王 clawclash 同款：全屏弹层 + 撒彩带；复用壳 .result-pop/.confetti-box）----
+let dqResultShown = false;
+function dqShowResult() {
+  if (!dqState || !dqState.status.over) return;
+  const st = dqState.status;
+  const reason = DQ_REASON_LABEL[st.reason] || st.reason || '';
+  const turns = st.turns != null ? st.turns : dqState.history.length;
+  const draw = st.winner === 'draw';
+  let win;
+  if (dqIsLocal) {
+    // 双人同屏：有人获胜就撒彩带，标题用获胜方名
+    win = !draw;
+    $('dqRpEmoji').textContent = draw ? '🤝' : '🏆';
+    $('dqRpTitle').textContent = draw ? '和棋' : `${dqSeatName(st.winner)} 获胜！`;
+    $('dqRpSub').textContent = `${reason} · 共 ${turns} 手`;
+  } else {
+    // 挑战棋手：人类固定坐 a，从人类视角判胜负
+    win = st.winner === dqState.humanSeat;
+    $('dqRpEmoji').textContent = draw ? '🤝' : (win ? '🎉' : '🌊');
+    $('dqRpTitle').textContent = draw ? '和棋' : (win ? '胜利！' : '惜败');
+    $('dqRpSub').textContent = `${reason} · 共 ${turns} 手 · 对手「${dqState.opponent || ''}」`;
+  }
+  $('dqResultPop').className = 'result-pop ' + (draw ? 'draw' : (win ? 'win' : 'loss'));
+  const box = $('dqConfettiBox'); box.innerHTML = '';
+  if (win) { // 胜利撒彩带（象棋主题字形）
+    const glyphs = ['🎉', '✨', '♟', '♜', '⭐', '🏆', '🎴'];
+    for (let i = 0; i < 26; i++) {
+      const s = document.createElement('span');
+      s.className = 'confetti'; s.textContent = glyphs[i % glyphs.length];
+      s.style.left = Math.random() * 100 + '%';
+      s.style.fontSize = (14 + Math.random() * 16) + 'px';
+      s.style.animationDuration = (2.2 + Math.random() * 1.8) + 's';
+      s.style.animationDelay = (Math.random() * 0.7) + 's';
+      box.appendChild(s);
+    }
+  }
+  openModal('dqResultOverlay');
+}
+function dqMaybeShowResult() {
+  if (dqState && dqState.status.over && !dqResultShown) {
+    dqResultShown = true;
+    setTimeout(dqShowResult, 420); // 等最后一手落子渲染完，给一个终局节拍
+  }
+}
+$('dqRpAgain').addEventListener('click', () => { closeModal('dqResultOverlay'); dqStartPlay(dqIsLocal); });
+$('dqRpClose').addEventListener('click', () => closeModal('dqResultOverlay'));
+
 function dqRenderAll() {
   dqRenderBoard();
   dqRenderSideInfo();
   dqRenderMoveList();
   dqRenderStatus();
+  dqMaybeShowResult();
 }
 
 function dqNewSeed() { return (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0; }
@@ -673,6 +721,7 @@ function dqNewSeed() { return (Date.now() ^ Math.floor(Math.random() * 1e9)) >>>
 async function dqStartPlay(local) {
   dqSelectedFrom = null;
   dqIsLocal = local;
+  dqResultShown = false; // 新对局重置终局动效标记
 
   if (local) {
     // 双人同屏：两边都是人，纯浏览器本地推演，零网络。
@@ -774,10 +823,8 @@ Platform.registerGame({
     dqRenderAll();
     await loadDqOpponents();
   },
-  onShow() {
-    const active = document.querySelector('.tab[data-dqtab].active');
-    showDqTab(active ? active.dataset.dqtab : 'dqplay');
-  },
+  showTab: showDqTab,               // 供壳侧栏导航派发（key: dqplay/dqleaderboard/dqmybot/dqguide）
+  onShow() { showDqTab('dqplay'); },
   showMine() { showDqTab('dqmybot'); },
   defaultView() { showDqTab('dqplay'); },
 });

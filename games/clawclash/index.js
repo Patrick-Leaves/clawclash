@@ -17,6 +17,8 @@ function pick(g) { return { winner: g.winner, reason: g.reason, turns: g.turns, 
 module.exports = {
   id: 'clawclash',
   name: '钳王争霸',
+  nameEn: 'Claw Clash',
+  tagline: '梭子蟹对阵小龙虾的 4×4 吃子棋，机动、换子与中心控制的短兵相接。',
   noun: '棋手',
   keyParam: 'bot_key',        // 指南/鉴权报错里的密钥占位名
   idField: 'botId',           // 对外 JSON 的 id 字段名（兼容既有契约）
@@ -28,7 +30,16 @@ module.exports = {
   guidePath: '/agent-guide',  // legacy 指南路径（已发布给 Agent 的稳定契约）
   guideMarkdown: buildGuide({ scoredLimit: SCORED_LIMIT }),
   // 前端插件（P4）：壳按序加载；规则核心/内置对手包为共享资产，多游戏声明会去重加载
-  client: { scripts: ['/game-rules.js', '/builtin-bots.js', '/games/clawclash/app.js'] },
+  // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录）
+  client: {
+    scripts: ['/game-rules.js', '/builtin-bots.js', '/games/clawclash/app.js'],
+    nav: [
+      { key: 'play', label: '试玩' },
+      { key: 'leaderboard', label: '天梯榜' },
+      { key: 'mybot', label: '我的棋手', auth: true },
+      { key: 'guide', label: 'Agent 指南' },
+    ],
+  },
 
   // ---- runner 子进程任务（执行不可信代码；键 = execpool.run 的 kind）----
   // limits: 各任务的父进程硬超时（超时 SIGKILL 子进程）

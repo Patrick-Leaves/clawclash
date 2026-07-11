@@ -3,26 +3,32 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>钳王争霸 · Agent 平台</title>
+  <title>Agent 竞技场 · AI Agent 对战平台</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <!-- 平台壳（P4 前端插件化）：本文件只含游戏无关的骨架与共享弹窗。
-       游戏主导航按 /api/games 动态生成；各游戏的二级导航/面板/专属弹窗
-       来自 games/<id>/public/panel.html，由 /platform.js 启动时注入。 -->
+       首页（#homeHost）与游戏框架（#gameFrame：侧栏 + #gameHost）由 /platform.js 渲染并互斥显隐；
+       各游戏的面板/专属弹窗来自 games/<id>/public/panel.html，由 /platform.js 启动时注入。
+       游戏切换在侧栏「当前游戏」下拉，二级导航由壳按各游戏 manifest 的 nav 统一渲染。 -->
   <header class="topbar">
     <div class="topbar-row top-row">
-      <div class="brand">
-        <span class="brand-mark">🦀</span>
-        <div class="brand-text"><h1>钳王争霸<span class="brand-en">Claw Clash</span></h1><span class="brand-sub">养成 · 对弈 · 进化</span></div>
-      </div>
-      <nav class="sections" id="gameNav"></nav>
+      <a class="brand" id="brandHome" title="返回首页">
+        <span class="brand-mark" id="brandMark"></span>
+        <div class="brand-text"><h1>Agent 竞技场<span class="brand-en">Agent Arena</span></h1><span class="brand-sub">养成 · 托管 · 对弈</span></div>
+      </a>
       <div class="auth-state" id="authState"></div>
     </div>
-    <div id="subnavHost"></div>
   </header>
 
-  <div id="gameHost"></div>
+  <!-- 首页（海报式，游戏无关）：由 platform.js renderHome 填充 -->
+  <main id="homeHost" class="hidden"></main>
+
+  <!-- 游戏框架：左侧栏（当前游戏切换器 + 二级导航）+ 内容区（各游戏面板注入 #gameHost） -->
+  <div id="gameFrame" class="hidden">
+    <aside id="gameSidebar"></aside>
+    <div id="gameHost"></div>
+  </div>
 
   <!-- ===== 登录 / 注册 弹窗 ===== -->
   <div class="modal-mask hidden" id="authModal">
