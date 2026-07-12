@@ -1,4 +1,5 @@
-<!-- 象棋暗战 · 前端面板片段（由平台壳按 data-slot 注入：panel→#gameHost、overlays→body）
+<!-- 象棋暗战 · 前端面板片段（MPA：服务器组装 /g/darkchess 时原文内联进 #gameHost；
+     data-slot="overlays" 的专属弹窗由壳脚本启动时移到 body 末）
      二级导航（试玩/天梯榜/我的棋手/Agent 指南）由壳按 manifest.client.nav 统一渲染在侧栏，此处不再自带 subnav。
      命名空间隔离：本游戏专属的 JS 查询属性/类名一律加 dq 前缀（data-dqtab / .dqtab-panel /
      data-dqplaymode / dq* id），避免与 clawclash 的 document 级选择器互相误伤。 -->

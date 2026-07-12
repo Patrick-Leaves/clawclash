@@ -33,14 +33,15 @@ module.exports = {
   guidePath: '/agent-guide-darkchess',
   guideMarkdown: buildGuide({ scoredLimit: SCORED_LIMIT }),
   // /darkchess-bots.js 须先于 app.js 加载（app.js 引用其暴露的 window.Darkchess* 全局）
-  // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录）
+  // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录；
+  // hash=该 tab 在 URL 里的深链接名，如 /g/darkchess#leaderboard，缺省=key）
   client: {
     scripts: ['/darkchess-bots.js', '/games/darkchess/app.js'],
     nav: [
-      { key: 'dqplay', label: '试玩' },
-      { key: 'dqleaderboard', label: '天梯榜' },
-      { key: 'dqmybot', label: '我的棋手', auth: true },
-      { key: 'dqguide', label: 'Agent 指南' },
+      { key: 'dqplay', hash: 'play', label: '试玩' },
+      { key: 'dqleaderboard', hash: 'leaderboard', label: '天梯榜' },
+      { key: 'dqmybot', hash: 'mybot', label: '我的棋手', auth: true },
+      { key: 'dqguide', hash: 'guide', label: 'Agent 指南' },
     ],
   },
 

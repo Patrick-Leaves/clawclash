@@ -1,0 +1,82 @@
+<!-- 平台共享弹窗 + toast（MPA：首页与游戏页模板经服务器组装时以 @MODALS 标记注入本片段，
+     两种页面共用同一份，杜绝双份标记漂移。绑定逻辑在 /platform.js。 -->
+<!-- ===== 登录 / 注册 弹窗 ===== -->
+<div class="modal-mask hidden" id="authModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="authTitle">注册账号</h2>
+      <button class="icon-btn" data-close="authModal">✕</button>
+    </div>
+    <div id="authRegister">
+      <p class="modal-sub">第 1 步 · 注册后再创建你的选手。</p>
+      <div class="field"><label>昵称</label><input id="reg-nick" placeholder="你的公开昵称" /><div class="field-err" id="err-nick"></div></div>
+      <div class="field"><label>邮箱</label><input id="reg-email" type="email" placeholder="you@example.com" /><div class="field-err" id="err-email"></div></div>
+      <div class="field"><label>密码</label><input id="reg-pw" type="password" placeholder="至少 8 位" /></div>
+      <div class="field"><label>确认密码</label><input id="reg-pw2" type="password" placeholder="再输入一次" /><div class="field-err" id="err-pw2"></div></div>
+      <button class="primary block" id="regBtn" disabled>注册</button>
+      <p class="modal-foot">已有账号？<a id="toLogin">去登录</a></p>
+    </div>
+    <div id="authLogin" class="hidden">
+      <p class="modal-sub">欢迎回来。</p>
+      <div class="field"><label>邮箱</label><input id="login-email" type="email" placeholder="you@example.com" /></div>
+      <div class="field"><label>密码</label><input id="login-pw" type="password" placeholder="密码" /><div class="field-err" id="err-login"></div></div>
+      <button class="primary block" id="loginBtn">登录</button>
+      <p class="modal-foot">还没有账号？<a id="toRegister">去注册</a></p>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 创建选手 / 更换头像 弹窗（通用组件：文案由各游戏注入） ===== -->
+<div class="modal-mask hidden" id="createBotModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>创建选手</h2>
+      <button class="icon-btn" data-close="createBotModal">✕</button>
+    </div>
+    <p class="modal-sub">起个名字、选个头像即可。脚本由你的 Agent 稍后编写并提交。</p>
+    <div class="field"><label>名称</label><input id="bot-name" placeholder="起个名字" /><div class="field-err" id="err-botname"></div></div>
+    <label class="field-label">头像 · 六款像素预设</label>
+    <div class="avatar-picker" id="avatarPicker"></div>
+    <p class="hint"><span>📐</span> 上传图片将打开内置裁剪，裁成 1:1 后使用（PNG/JPG · ≤100KB）</p>
+    <div class="warn-box">⚠ 创建后脚本为空，必须由你/Agent 提交首个版本并通过烟雾测试才能对战。</div>
+    <button class="primary block" id="createBotBtn">创建</button>
+    <input type="file" id="avatarFile" accept="image/png,image/jpeg" class="hidden" />
+  </div>
+</div>
+
+<!-- ===== 裁剪 弹窗 ===== -->
+<div class="modal-mask hidden" id="cropModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>裁剪为正方形</h2>
+      <button class="icon-btn" data-close="cropModal">✕</button>
+    </div>
+    <p class="modal-sub">白色方框内即为最终头像。默认显示整张图片，可拖动图片、用滑块放大来裁掉多余部分。</p>
+    <div class="crop-stage"><canvas id="cropCanvas" width="288" height="288"></canvas></div>
+    <div class="ctrl-row"><label>缩放</label><input type="range" id="cropZoom" min="100" max="300" value="100" /></div>
+    <button class="primary block" id="cropConfirm">确定使用</button>
+  </div>
+</div>
+
+<!-- ===== 代码查看 弹窗 ===== -->
+<div class="modal-mask hidden" id="codeModal">
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <h2 id="codeTitle">脚本</h2>
+      <div><button class="mini" id="codeCopy">复制</button> <button class="icon-btn" data-close="codeModal">✕</button></div>
+    </div>
+    <pre class="code-view"><code id="codeBody"></code></pre>
+  </div>
+</div>
+
+<!-- ===== 通用提示 弹窗 ===== -->
+<div class="modal-mask hidden" id="popupModal">
+  <div class="modal modal-narrow popup">
+    <div class="popup-icon" id="popupIcon">✉</div>
+    <h2 id="popupTitle"></h2>
+    <p class="modal-sub" id="popupText"></p>
+    <div class="popup-actions" id="popupActions"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>

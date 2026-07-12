@@ -1,8 +1,12 @@
 'use strict';
-// 平台前端壳（P4 前端插件化）：共享工具 + 登录态 + 通用弹窗 + 选手创建/头像组件 + 游戏插件加载器。
-// 游戏前端在 games/<id>/public/{panel.html, app.js}，壳按 GET /api/games 动态注入面板并加载脚本；
-// 各游戏脚本与壳共享全局作用域（经典 script），通过 Platform.registerGame 挂接生命周期。
-// 新增游戏无需改动本文件与 index.html。
+// 平台前端壳（MPA）：共享工具 + 登录态 + 通用弹窗 + 选手创建/头像组件 + 游戏页 hash 路由。
+// 页面结构：首页 /（index.html 模板）+ 每游戏一页 /g/<gid>（game.html 模板）——服务器组装时
+// 把 games/<gid>/public/panel.html 原文内联进 #gameHost、按 manifest client.scripts 注入 <script>。
+// 本文件同时服务两种页面，按服务器注入的 window.__PAGE__.gid 分支（null=首页）。
+// 游戏脚本与壳共享全局作用域（经典 script），经 Platform.registerGame 挂接生命周期。
+// tab 级深链接在 hash（如 /g/darkchess#leaderboard，别名来自 manifest nav[].hash）：
+// 刷新保位、可分享；游戏内 detail/public 等子视图不进 hash，保持父项高亮。
+// 新增游戏无需改动本文件与两份页面模板。
 const $ = (id) => document.getElementById(id);
 const SMOKE_LABEL = { passed: '已通过', failed: '未通过', pending: '测试中' };
 // 单场结果标签 / 结果 chip 配色类（胜/负/平三态，所有游戏通用）
@@ -152,102 +156,22 @@ function renderVersionList(container, versions, viewBase) {
 }
 
 // ============================================================
-// 游戏插件框架 + 视图（首页 / 游戏框架）+ 侧栏导航
+// 页面元数据 + 游戏插件注册（MPA）
 // ============================================================
+// __PAGE__ 由服务器组装页面时注入：{ gid: 本页游戏 id | null(首页), games: [游戏清单] }。
+// 游戏清单与 GET /api/games 同源（id/name/nameEn/tagline/nav），前端免一次启动请求。
+const PAGE = window.__PAGE__ || { gid: null, games: [] };
+const IS_GAME_PAGE = !!PAGE.gid;
+const gamesMeta = {}; // id → { id, name, nameEn, tagline, nav }
+for (const g of PAGE.games) gamesMeta[g.id] = g;
 // 插件形状（games/<id>/public/app.js 里 Platform.registerGame 注册）：
-//   { id, init()?, onShow()?, showTab(key)?, showMine()?, defaultView()?, onAuthChange()? }
-// 两个顶层视图互斥：'home'（#homeHost 海报首页）/ 'game'（#gameFrame：侧栏 + #gameHost）。
-let CURRENT_GAME = null;
-let VIEW = 'home';
-const gamesMeta = {}; // id → { id, name, nameEn, tagline, nav }（来自 /api/games）
-const activeTab = {}; // id → 当前高亮的侧栏 nav key
+//   { id, init()?, onShow()?, showTab(key)?, showMine()?, onAuthChange()? }
+// 一页一游戏：本页只会注册 PAGE.gid 这一个插件（脚本由服务器按 manifest 注入 <script>）。
 const Platform = {
   games: [], byId: {},
   registerGame(p) { this.games.push(p); this.byId[p.id] = p; },
-  current() { return this.byId[CURRENT_GAME] || null; },
-  // 纯 DOM 切换（不触发 onShow）：游戏面板显隐 + 侧栏（当前游戏名 + 二级导航）重渲染。
-  // 游戏内部跳转（如 showTab）也会调用它来确保自身可见，故不得在此回调 onShow（防递归）。
-  activateGame(gid) {
-    if (CURRENT_GAME === gid) return;
-    CURRENT_GAME = gid;
-    document.querySelectorAll('#gameHost > .section-panel').forEach((p) => p.classList.toggle('active', p.dataset.game === gid));
-    renderSidebar(gid);
-  },
-  // 登出：回海报首页
-  resetToDefault() { showHome(); },
+  current() { return this.byId[PAGE.gid] || null; },
 };
-// ---- 顶层视图切换 ----
-function enterGameView() {
-  if (VIEW === 'game') return;
-  VIEW = 'game';
-  $('homeHost').classList.add('hidden');
-  $('gameFrame').classList.remove('hidden');
-}
-function showHome() {
-  VIEW = 'home';
-  $('gameFrame').classList.add('hidden');
-  $('homeHost').classList.remove('hidden');
-  updateHomeAuth();
-  window.scrollTo(0, 0);
-}
-// 进入某游戏：懒加载其插件（面板 + 脚本 + init，仅首次进入），期间内容区显示加载态。
-// 首页与侧栏只需 /api/games 的元数据即可渲染，游戏插件按需加载——避免上来就下发三款游戏资产。
-async function showGame(gid) {
-  enterGameView();
-  const firstLoad = !gameLoaders[gid];
-  renderSidebar(gid);              // 侧栏立即显示目标游戏名 + 二级导航（数据来自 meta，无需插件）
-  if (firstLoad) gameHostLoading(true);
-  window.scrollTo(0, 0);
-  try {
-    await ensureGameLoaded(gid);   // 面板注入 + 脚本按序加载 + init() 一次（去重）
-  } catch {
-    gameHostLoading(false);
-    toast('游戏加载失败，请刷新重试');
-    return;
-  }
-  gameHostLoading(false);
-  Platform.activateGame(gid);      // 切面板显隐 + 侧栏（CURRENT_GAME 此刻置位）
-  const p = Platform.byId[gid];
-  p && p.onShow && p.onShow();
-}
-// 内容区加载态：懒加载游戏插件期间隐藏所有已就绪面板、显示占位。
-function gameHostLoading(on) {
-  let el = $('gameHostLoading');
-  if (on) {
-    document.querySelectorAll('#gameHost > .section-panel').forEach((p) => p.classList.remove('active'));
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'gameHostLoading'; el.className = 'muted-center'; el.style.padding = '80px 20px';
-      el.textContent = '加载中…';
-      $('gameHost').appendChild(el);
-    }
-    el.style.display = '';
-  } else if (el) {
-    el.style.display = 'none';
-  }
-}
-// 懒加载游戏插件：面板片段注入（panel→#gameHost、overlays→body）+ manifest.client.scripts
-// 按声明顺序串行加载（同一游戏内部有依赖，如暗战 /darkchess-bots.js 须先于 app.js）+ init() 一次。
-// Promise 去重：同一游戏并发/重复进入只加载一次；共享脚本再经 loadScriptOnce 全局去重。
-const gameLoaders = {};
-function ensureGameLoaded(gid) {
-  if (gameLoaders[gid]) return gameLoaders[gid];
-  const g = gamesMeta[gid];
-  gameLoaders[gid] = (async () => {
-    const html = await (await fetch(`/games/${gid}/panel.html`, { credentials: 'same-origin' })).text();
-    const tpl = document.createElement('template');
-    tpl.innerHTML = html;
-    const panel = tpl.content.querySelector('[data-slot="panel"]');
-    const overlays = tpl.content.querySelector('[data-slot="overlays"]');
-    if (panel) { panel.dataset.game = gid; panel.classList.remove('active'); $('gameHost').appendChild(panel); }
-    if (overlays) document.body.appendChild(overlays);
-    for (const src of g.scripts) await loadScriptOnce(src); // app.js 内触发 registerGame
-    bindModalChrome();                                       // 绑定新注入 overlays 的关闭/遮罩
-    const p = Platform.byId[gid];
-    if (p && p.init) await p.init();
-  })();
-  return gameLoaders[gid];
-}
 
 // ============================================================
 // 内联 SVG 图标（全站零 emoji / 零素材）
@@ -403,30 +327,31 @@ function gamePosterSvg(game, i) {
 }
 
 // ============================================================
-// 游戏框架 · 左侧栏（当前游戏切换器 + 二级导航，壳层统一渲染）
+// 游戏页 · 左侧栏（当前游戏切换器 + 二级导航，壳层统一渲染）
+// 切换游戏 = <a href="/g/<id>"> 整页跳转（浏览器天然做隔离与资源缓存）。
 // ============================================================
-function buildSidebar(games) {
+let activeNavKey = null; // 本页当前高亮的 nav key（一页一游戏，单值即可）
+function buildSidebar() {
+  const meta = gamesMeta[PAGE.gid]; if (!meta) return;
   $('gameSidebar').innerHTML = `
     <div class="gsw">
       <div class="gsw-label">当前游戏</div>
       <button class="gsw-current" id="gswCurrent" type="button">
-        <span class="gsw-dot"></span><span class="gsw-name" id="gswName">—</span>${chevronSvg()}
+        <span class="gsw-dot"></span><span class="gsw-name">${esc(meta.name)}</span>${chevronSvg()}
       </button>
       <div class="gsw-menu hidden" id="gswMenu">
-        ${games.map((g) => `<button class="gsw-item" type="button" data-game="${esc(g.id)}"><span class="gsw-dot"></span>${esc(g.name)}</button>`).join('')}
+        ${PAGE.games.map((g) => `<a class="gsw-item" href="/g/${esc(g.id)}"><span class="gsw-dot"></span>${esc(g.name)}</a>`).join('')}
       </div>
     </div>
     <nav class="side-nav" id="sideNav"></nav>`;
   const menu = $('gswMenu');
   $('gswCurrent').addEventListener('click', (e) => { e.stopPropagation(); menu.classList.toggle('hidden'); });
-  menu.querySelectorAll('[data-game]').forEach((b) => b.addEventListener('click', () => { menu.classList.add('hidden'); showGame(b.dataset.game); }));
   document.addEventListener('click', () => menu.classList.add('hidden')); // 点外部收起
 }
-function renderSidebar(gid) {
-  const meta = gamesMeta[gid]; if (!meta) return;
-  const nameEl = $('gswName'); if (nameEl) nameEl.textContent = meta.name;
-  const nav = meta.nav || [];
-  const active = activeTab[gid] || (nav[0] && nav[0].key);
+// 二级导航重渲染（登录态变化时锁标会变，refreshMe 会重调；高亮取 activeNavKey）
+function renderSideNav() {
+  const nav = (gamesMeta[PAGE.gid] || {}).nav || [];
+  const active = activeNavKey || (nav[0] && nav[0].key);
   const sideNav = $('sideNav'); if (!sideNav) return;
   sideNav.innerHTML = nav.map((n, i) => {
     const locked = n.auth && !(ME && ME.account);
@@ -435,22 +360,56 @@ function renderSidebar(gid) {
       <span class="nav-label">${esc(n.label)}</span>${locked ? lockSvg() : ''}
     </button>`;
   }).join('');
-  sideNav.querySelectorAll('[data-navkey]').forEach((b) => b.addEventListener('click', () => dispatchNav(gid, b.dataset.navkey)));
+  sideNav.querySelectorAll('[data-navkey]').forEach((b) => b.addEventListener('click', () => dispatchNav(b.dataset.navkey)));
 }
 // 侧栏导航点击派发（含登录守卫：auth 项未登录 → 弹注册）
-function dispatchNav(gid, key) {
-  const meta = gamesMeta[gid]; if (!meta) return;
-  const item = (meta.nav || []).find((n) => n.key === key);
+function dispatchNav(key) {
+  const nav = (gamesMeta[PAGE.gid] || {}).nav || [];
+  const item = nav.find((n) => n.key === key);
   if (item && item.auth && !(ME && ME.account)) { openAuth('register'); return; }
-  const p = Platform.byId[gid];
+  const p = Platform.current();
   p && p.showTab && p.showTab(key);
 }
-// 游戏经 showTab 切换后回调：仅当 name 是 nav key 才更新高亮；detail/public 等子视图保持父项高亮
-function syncSidebarNav(gid, name) {
-  const nav = (gamesMeta[gid] && gamesMeta[gid].nav) || [];
-  if (!nav.some((n) => n.key === name)) return;
-  activeTab[gid] = name;
-  document.querySelectorAll('#sideNav .side-nav-item').forEach((b) => b.classList.toggle('active', b.dataset.navkey === name));
+
+// ============================================================
+// hash 路由（tab 级深链接：/g/<gid>#<hash>，别名来自 manifest nav[].hash，缺省=key）
+// 写方向：makeTabs.show → syncTabHash——仅 nav key 才写 hash 与高亮；detail/public 等
+//   子视图不进 hash、保持父项高亮。用户导航用 location.hash 赋值（留历史，浏览器前进/
+//   后退可在 tab 间穿梭）；路由自身触发的 showTab 用 replaceState（不留冗余历史）。
+// 读方向：首次加载 / hashchange → routeFromHash——hash 或 key 均可解析；登录守卫不过
+//   → 弹注册并落回当前/默认 tab；目标已是当前 tab 则跳过（防自写 hash 回环）。
+// ============================================================
+let hashWriteReplace = false; // routeFromHash 执行期间置真：其触发的 syncTabHash 用 replaceState
+function navHashOf(item) { return item.hash || item.key; }
+function syncTabHash(key) {
+  if (!IS_GAME_PAGE) return;
+  const nav = (gamesMeta[PAGE.gid] || {}).nav || [];
+  const item = nav.find((n) => n.key === key);
+  if (!item) return; // 子视图：hash 与侧栏高亮都保持在父项
+  activeNavKey = key;
+  document.querySelectorAll('#sideNav .side-nav-item').forEach((b) => b.classList.toggle('active', b.dataset.navkey === key));
+  const h = '#' + navHashOf(item);
+  if (location.hash === h) return;
+  if (hashWriteReplace) history.replaceState(null, '', h);
+  else location.hash = h; // 触发 hashchange → routeFromHash 因 key 已 active 而跳过
+}
+function routeFromHash(initial) {
+  const p = Platform.current();
+  const nav = (gamesMeta[PAGE.gid] || {}).nav || [];
+  if (!p || !p.showTab || !nav.length) return;
+  const raw = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  let item = nav.find((n) => navHashOf(n) === raw || n.key === raw) || null;
+  if (item && item.auth && !(ME && ME.account)) {
+    openAuth('register');
+    item = null; // 守卫不过：落回当前/默认 tab，并把 hash 修正回去（不污染历史）
+    const cur = nav.find((n) => n.key === activeNavKey);
+    if (cur) history.replaceState(null, '', '#' + navHashOf(cur));
+  }
+  hashWriteReplace = true;
+  try {
+    if (item) { if (item.key !== activeNavKey) p.showTab(item.key); }
+    else if (initial || !raw) { p.onShow ? p.onShow() : p.showTab(nav[0].key); } // 无/未知 hash → 该游戏默认 tab
+  } finally { hashWriteReplace = false; }
 }
 
 // ============================================================
@@ -463,15 +422,16 @@ function renderHome(games) {
     { t: '交给 Agent', d: 'Agent 凭密钥调用 API：读规则、写脚本、提交策略。' },
     { t: '冲击天梯', d: '侦察对手、发起正式挑战，赢下段位分。' },
   ];
+  // 游戏卡是真链接（MPA）：整页跳转到 /g/<id>，可中键新开、可收藏
   const cards = games.map((g, i) => `
-    <button class="home-game-card" type="button" data-enter="${esc(g.id)}">
+    <a class="home-game-card" href="/g/${esc(g.id)}">
       <div class="hg-poster">${gamePosterSvg(g, i)}</div>
       <div class="hg-body">
         <div class="hg-titles"><span class="hg-name">${esc(g.name)}</span><span class="hg-en">${esc(g.nameEn || '')}</span></div>
         <p class="hg-tagline">${esc(g.tagline || '')}</p>
         <span class="hg-enter">进入游戏 ${arrowSvg()}</span>
       </div>
-    </button>`).join('');
+    </a>`).join('');
   $('homeHost').innerHTML = `
     <section class="home-hero">
       <h1 class="home-h1"><span>你养成选手，</span><span>AI Agent 上场对弈。</span></h1>
@@ -489,7 +449,6 @@ function renderHome(games) {
       <div class="home-games">${cards}</div>
       <div class="home-more"><b>更多游戏筹备中</b><span>平台将持续接入新对弈游戏，同一账号与 Agent 接口通用。</span></div>
     </section>`;
-  $('homeHost').querySelectorAll('[data-enter]').forEach((b) => b.addEventListener('click', () => showGame(b.dataset.enter)));
   updateHomeAuth();
 }
 // Hero CTA：未登录=「注册，创建选手」；登录态不放 CTA（结构不变）
@@ -502,23 +461,21 @@ function updateHomeAuth() {
 
 // ============================================================
 // 二级 tab 控制器（平台通用组件）
-// 二级导航现由壳按各游戏 manifest 的 nav 统一渲染在侧栏（buildSidebar/renderSidebar），
-// 点击经 dispatchNav → 本函数返回的 show(key)。本函数只负责「切面板 + 回调 + 同步侧栏高亮」。
+// 二级导航由壳按 manifest nav 渲染在侧栏，点击经 dispatchNav → 本函数返回的 show(key)。
+// 本函数只负责「切面板 + 同步 hash/侧栏高亮 + 回调」。
 //   makeTabs(cfg) → { show(name) }
-//   cfg = { gid, panelClass, panelPrefix, onTab: { <tab>: fn } }
+//   cfg = { panelClass, panelPrefix, onTab: { <tab>: fn } }
 //     panelClass  面板容器 class（'tab-panel'|'ptab-panel'|'dqtab-panel'）
 //     panelPrefix 面板 id 前缀（配 tab 名拼出面板 id，如 'tab-'+name）
 //     onTab       进入某 tab 时的加载回调（如 leaderboard→loadLeaderboard）
 // 说明：onTab 的值多为文件后段声明的函数——函数声明会提升，故在此传引用安全。
-// 兼容：调用方仍可传 attr/authTabs（现由壳的 nav 元数据接管，此处忽略）。
+// 兼容：调用方仍可传 gid/attr/authTabs（gid 由 __PAGE__ 接管、守卫由 nav 元数据接管，此处忽略）。
 // ============================================================
-function makeTabs({ gid, panelClass, panelPrefix, onTab = {} }) {
+function makeTabs({ panelClass, panelPrefix, onTab = {} }) {
   function show(name) {
-    enterGameView();            // 从首页/任意态确保进入游戏框架
-    Platform.activateGame(gid); // 切到本游戏（面板显隐 + 侧栏渲染）
     document.querySelectorAll('.' + panelClass).forEach((p) => p.classList.remove('active'));
     const panel = $(panelPrefix + name); if (panel) panel.classList.add('active');
-    syncSidebarNav(gid, name);  // 高亮侧栏对应导航项（detail/public 等子视图保持父项高亮）
+    syncTabHash(name); // nav key → 写 hash + 高亮；detail/public 等子视图 → 保持父项
     if (onTab[name]) onTab[name]();
   }
   return { show };
@@ -580,10 +537,10 @@ function bindAccessCard(root, { promptUrl, rotateUrl, onRotated }) {
 async function refreshMe() {
   const r = await apiFetch('GET', '/api/me');
   ME = r.ok ? r : null;
-  for (const p of Platform.games) p.onAuthChange && p.onAuthChange(); // 各游戏失效自己的登录态缓存
+  for (const p of Platform.games) p.onAuthChange && p.onAuthChange(); // 本页游戏失效自己的登录态缓存
   renderAuthState();
-  updateHomeAuth(); // 首页 Hero CTA 随登录态变化
-  if (VIEW === 'game' && CURRENT_GAME) renderSidebar(CURRENT_GAME); // 侧栏「我的X」锁标随登录态变化
+  if (IS_GAME_PAGE) renderSideNav(); // 侧栏「我的X」锁标随登录态变化
+  else updateHomeAuth();             // 首页 Hero CTA 随登录态变化
   return ME;
 }
 // 当前账号在某游戏的选手概要（/api/me 的 players.<gid>；未登录或未建号 → null）。
@@ -593,7 +550,12 @@ function renderAuthState() {
   const el = $('authState');
   if (ME && ME.account) {
     el.innerHTML = `<span class="who">${esc(ME.account.nickname)}</span><button class="mini" id="logoutBtn">登出</button>`;
-    $('logoutBtn').addEventListener('click', async () => { await apiFetch('POST', '/api/auth/logout'); await refreshMe(); Platform.resetToDefault(); toast('已登出'); });
+    // 游戏页登出 → 整页回首页（状态自然重置）；首页登出 → 原地刷新登录态
+    $('logoutBtn').addEventListener('click', async () => {
+      await apiFetch('POST', '/api/auth/logout');
+      if (IS_GAME_PAGE) { location.href = '/'; return; }
+      await refreshMe(); toast('已登出');
+    });
   } else {
     el.innerHTML = `<button class="primary mini" id="openRegisterBtn">注册</button><button class="mini" id="openLoginBtn">登录</button>`;
     $('openRegisterBtn').addEventListener('click', () => openAuth('register'));
@@ -926,36 +888,38 @@ $('cropConfirm').addEventListener('click', async () => {
 });
 
 // ============================================================
-// 启动：拉游戏清单 → 各游戏面板+脚本并行加载 → 并行初始化
+// 启动（MPA：按页面类型分支；经典 script 位于 body 末，执行时 DOM 已可用）
 // ============================================================
-// 按 src 缓存"加载中/已完成"的 Promise（而非布尔标记）：多个游戏并行加载时，
-// 共享脚本（如 /builtin-bots.js）的后到调用方会拿到同一个 Promise 一起等，
-// 而不是拿到一个提前 resolve 的假完成态——否则并行下 app.js 可能在共享脚本
-// 真正下载完成前就执行，读到未挂载的 window.PdRules 等全局对象。
-const loadedScripts = new Map();
-function loadScriptOnce(src) {
-  if (loadedScripts.has(src)) return loadedScripts.get(src);
-  const p = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('脚本加载失败: ' + src));
-    document.body.appendChild(s);
-  });
-  loadedScripts.set(src, p);
-  return p;
+$('brandMark').innerHTML = brandMarkSvg();
+bindModalChrome(); // 共享弹窗 + （游戏页）服务器内联的 overlays 此刻均已在 DOM
+if (IS_GAME_PAGE) {
+  // 面板由服务器内联在 #gameHost 内：把游戏专属弹窗（overlays）移到 body 末
+  // （脱离面板容器的布局上下文），面板置为可见。节点移动不影响后续按 id 的绑定。
+  document.querySelectorAll('#gameHost [data-slot="overlays"]').forEach((o) => document.body.appendChild(o));
+  document.querySelectorAll('#gameHost .section-panel').forEach((p) => p.classList.add('active'));
+  buildSidebar();
+  renderSideNav();
+  // 游戏脚本（manifest client.scripts）在本脚本之后以经典 <script> 按序执行并 registerGame，
+  // 故 init 与首次路由推迟到 DOMContentLoaded（此刻页内全部脚本已执行完毕）。
+  document.addEventListener('DOMContentLoaded', bootGamePage);
+} else {
+  bootHome();
 }
-(async function boot() {
-  const meta = await apiFetch('GET', '/api/games');
-  if (!meta.ok || !meta.games || !meta.games.length) { toast('平台加载失败，请刷新重试'); return; }
-  for (const g of meta.games) gamesMeta[g.id] = g; // 首页卡片 / 侧栏 nav 的元数据源
-  bindModalChrome();
-  $('brandMark').innerHTML = brandMarkSvg();
-  $('brandHome').addEventListener('click', showHome);
-  buildSidebar(meta.games);   // 侧栏「当前游戏」切换器骨架（列表来自 meta，无需插件）
-  renderHome(meta.games);     // 海报首页（Hero + 四步 + 游戏卡）——只用 /api/games 元数据
-  await refreshMe();          // 登录态（决定 Hero CTA / 顶栏），轻量
-  showHome();                 // 默认落地首页
-  // 各游戏插件（panel.html + 引擎包 + app.js + init()）改为进入游戏时按需懒加载
-  // （showGame → ensureGameLoaded）——首页无需任何游戏插件，避免上来就下发三款游戏资产。
-})();
+async function bootGamePage() {
+  const p = Platform.current();
+  if (!p) { toast('游戏脚本加载失败，请刷新重试'); return; }
+  await refreshMe(); // 先取登录态：路由的 auth 守卫、侧栏锁标都依赖 ME
+  if (p.init) {
+    try { await p.init(); }
+    catch (e) { console.error(e); toast('游戏初始化失败，请刷新重试'); return; }
+  }
+  routeFromHash(true); // 深链接 → 对应 tab；无/未知 hash → 该游戏默认 tab（onShow）
+  window.addEventListener('hashchange', () => routeFromHash(false));
+}
+function bootHome() {
+  // 兼容旧式全站 hash 深链接（#/g/<gid>/<tab>）：重定向到对应游戏页 /g/<gid>#<tab>
+  const m = location.hash.match(/^#\/?g\/([a-z0-9_-]+)(?:\/([a-z0-9_-]+))?$/);
+  if (m && gamesMeta[m[1]]) { location.replace(`/g/${m[1]}${m[2] ? '#' + m[2] : ''}`); return; }
+  renderHome(PAGE.games);
+  refreshMe(); // 登录态（决定 Hero CTA / 顶栏），异步补齐即可
+}

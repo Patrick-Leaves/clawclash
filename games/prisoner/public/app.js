@@ -1,6 +1,6 @@
 'use strict';
-// 囚徒困境 · 前端插件（P4 前端插件化）
-// 面板标记在同目录 panel.html，由平台壳（/platform.js）注入 DOM 后再加载本文件。
+// 囚徒困境 · 前端插件（MPA）
+// 面板标记在同目录 panel.html，由服务器内联进游戏页 /g/prisoner 后再加载本文件。
 // 整个文件包在 IIFE 内：所有声明均为本游戏私有，跨游戏零命名碰撞；对外只经
 // Platform.registerGame 暴露插件对象。壳工具（$ / apiFetch / esc / toast / rankLabel /
 // avatarHtml / openModal / closeModal / popup / ME / RES_LABEL / verifyBannerHtml 等）
@@ -442,9 +442,8 @@ function pdPlayRender() {
 // ============================================================
 Platform.registerGame({
   id: 'prisoner',
-  showTab: showPTab,                // 供壳侧栏导航派发（key: pplay/pleaderboard/pmybot/pguide）
-  onShow() { showPTab('pleaderboard'); },
+  showTab: showPTab,                // 供壳侧栏导航 + hash 路由派发（key: pplay/pleaderboard/pmybot/pguide）
+  onShow() { showPTab('pleaderboard'); }, // 无 hash 时的默认落点 tab
   showMine() { showPTab('pmybot'); },
-  defaultView() { showPTab('pplay'); },
 });
 })();

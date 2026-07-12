@@ -244,13 +244,13 @@ const challenge = {
 <div data-slot="overlays"> …本游戏专属弹窗（挂到 body，不随面板隐藏）… </div>
 ```
 
-**app.js**：整体 IIFE，尾部 `Platform.registerGame({ id, init, onShow, showTab, showMine, defaultView, onAuthChange })`。要点：
+**app.js**：整体 IIFE，尾部 `Platform.registerGame({ id, init, onShow, showTab, showMine, onAuthChange })`。要点：
 
 - **DOM 命名空间**：IIFE 只隔离 JS；document 级的 data 属性/class/id 必须带游戏前缀（现占用：钳王 `tab`/`tab-panel`、囚徒 `ptab`、暗战 `dqtab`）。
 - **二级导航由壳渲染**：`makeTabs(cfg)` 返回的 `show(key)` 注册为插件 `showTab`，供壳侧栏点击派发；`makeTabs` 本身**不再绑导航按钮**（按钮由壳画，登录守卫在壳的 `dispatchNav`）。`client.nav` 的每个 `key` 必须与 `makeTabs` 的 tab 名一致。
 - 能复用的都复用壳组件：`makeTabs`（二级 tab 切换）、`renderLeaderboardRows`、`renderVersionList`、`overviewCardHtml`/`accessCardHtml`+`bindAccessCard`、`verifyBannerHtml`+`bindVerifyBanner`、`openCreatePlayer`/`openAvatarEditorShared`、`myPlayer(gid)`、`popup/toast/copyText/apiFetch/esc/avatarHtml/rankLabel`。真正要自己写的只有：试玩交互（棋盘渲染/操作）与回放视图。棋类若要试玩终局动效，复用壳样式 `.result-pop`/`.confetti-box`（参照钳王/暗棋，overlay 用带前缀 id）。
 - 登录态缓存失效放 `onAuthChange`；建号/换头像后 `await refreshMe()` 再重画。
-- **懒加载时机**：游戏插件（面板 + `client.scripts` + `init()`）在**用户首次进入该游戏时**才由壳 `ensureGameLoaded` 加载，不在开站时——`init()` 只在首次进入跑一次，勿假设它在页面启动即执行；面板 DOM 也是进入后才存在（`init` 里可安全操作自己的面板子树）。
+- **加载时机（MPA）**：本游戏只在自己的页面 `/g/<id>` 下发——服务器组装页面时把 `panel.html` 内联进 `#gameHost`、按 `client.scripts` 注入 `<script>`（面板 DOM 先于脚本存在，app.js 顶层可直接按 id 绑定）；`init()` 由壳在 DOMContentLoaded 后、首次路由前调用一次。tab 深链接：`client.nav[].hash` 为该 tab 的 URL 名（如 `/g/<id>#leaderboard`，缺省=key），无需游戏侧写任何路由代码。
 - （可选）首页卡片海报：默认落回壳的通用渐变占位；若要主题化插画，在壳 `gamePosterSvg` 按 `game.id` 加一个分支（参照钳王/囚徒/暗棋）。
 
 ---
@@ -262,7 +262,7 @@ const challenge = {
 const ids = ['clawclash', 'prisoner', 'darkchess', '<id>'];
 ```
 
-到此新游戏自动获得：全套 22 条平台 API（`/api/games/<id>/…`）、统一数据层（零 schema 工作）、天梯微缓存、结算与并发保护、指南路由、`/api/me` 里的选手概要、首页卡片与侧栏「当前游戏」入口、二级导航（按 `client.nav`）、以及进入时的插件懒加载注入（首页不受新增游戏拖累）。
+到此新游戏自动获得：全套 22 条平台 API（`/api/games/<id>/…`）、统一数据层（零 schema 工作）、天梯微缓存、结算与并发保护、指南路由、`/api/me` 里的选手概要、独立游戏页 `/g/<id>`（服务器自动组装，含 tab 级 hash 深链接）、首页卡片与侧栏「当前游戏」入口、二级导航（按 `client.nav`）——首页与其它游戏页不受新增游戏拖累。
 
 ---
 
@@ -292,7 +292,7 @@ route('GET', '/<id>-bots.js', (req, res) => sendCached(req, res, <ID>_BOTS_JS, '
 
 **手动清单**（`node server.js` 后过一遍）：
 - [ ] 启动日志出现新游戏名；首页出现该游戏卡片（名/英文名/简介，点卡进入）；侧栏「当前游戏」下拉可切到本游戏、竖排二级导航（按 `client.nav`）正常切换、未登录点「我的X」弹注册；
-- [ ] 懒加载：首页 Network 无本游戏 `panel.html`/脚本请求；点卡进入后才加载该游戏插件、`init()` 只跑一次、再次进入不重复 fetch；
+- [ ] 按页加载（MPA）：首页 Network 无本游戏任何资产请求；`/g/<id>` 只下发本游戏面板与脚本；深链接 `/g/<id>#leaderboard` 直达对应 tab、刷新保位；
 - [ ] 注册 → 建选手（名称查重、头像上传/预设）→「我的」页概览/密钥掩码/一键 Prompt；
 - [ ] 用 Prompt 里的 key 走 Agent 链路：`code/submit` 烟雾失败（提交个 `throw` 脚本验证 422 明细）→ 提交正常脚本 → v1 发布；
 - [ ] 两个账号互相 `challenge`：结果/rpChange/scored 正确；打满 `scoredLimit` 场后转练习赛（`scored:false`）；

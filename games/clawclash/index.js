@@ -30,7 +30,8 @@ module.exports = {
   guidePath: '/agent-guide',  // legacy 指南路径（已发布给 Agent 的稳定契约）
   guideMarkdown: buildGuide({ scoredLimit: SCORED_LIMIT }),
   // 前端插件（P4）：壳按序加载；规则核心/内置对手包为共享资产，多游戏声明会去重加载
-  // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录）
+  // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录；
+  // hash=该 tab 的 URL 深链接名（缺省=key，本游戏 key 本身即干净英文名，如 /g/clawclash#leaderboard）
   client: {
     scripts: ['/game-rules.js', '/builtin-bots.js', '/games/clawclash/app.js'],
     nav: [

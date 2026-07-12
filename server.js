@@ -378,7 +378,8 @@ route('GET', '/darkchess-bots.js', (req, res) => {
   sendCached(req, res, DARKCHESS_BOTS_JS, 'text/javascript; charset=utf-8', 'no-cache');
 });
 
-// 游戏清单（P4 前端插件化）：前端壳按此动态生成主导航、注入各游戏面板并按序加载脚本
+// 游戏清单（公开 API）。前端页面已改经 window.__PAGE__ 注入同源数据（见下方页面组装段），
+// 本端点保留给外部消费方（Agent/脚本/测试），响应结构不变。
 route('GET', '/api/games', (req, res) => {
   sendJson(res, 200, { ok: true, games: registry.ids.map((id) => {
     const m = registry.manifests[id];
@@ -397,6 +398,49 @@ route('GET', /^\/games\/([a-z0-9_-]+)\/(app\.js|panel\.html)$/, (req, res, m) =>
   fs.readFile(fp, (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not Found'); }
     sendCached(req, res, data, m[2].endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8', 'no-cache');
+  });
+});
+
+// ============================================================
+// § 页面组装（前端 MPA）：首页 / + 每游戏一页 /g/<gid>
+// 模板 public/index.html（首页）与 public/game.html（游戏页）+ 共享弹窗片段
+// public/fragments/shared_modals.html。游戏页把 games/<gid>/public/panel.html 原文内联进
+// #gameHost、按 manifest client.scripts 注入 <script> 清单（浏览器按序执行，天然有依赖顺序）。
+// 页面元数据（本页 gid + 游戏清单）经 window.__PAGE__ 注入，前端免一次 /api/games 请求。
+// 与其他前端资产同策略：每次读盘 + no-cache 协商缓存（内容哈希 ETag），部署改动即时生效。
+// 新增游戏零改动：/g/<新id> 自动可用（注册表驱动）。
+// ============================================================
+const fsp = fs.promises;
+function pageMetaScript(gid) {
+  const games = registry.ids.map((id) => {
+    const m = registry.manifests[id];
+    return { id, name: m.name, nameEn: m.nameEn || '', tagline: m.tagline || '', nav: (m.client && m.client.nav) || [] };
+  });
+  // JSON 里的 < 一律转义：防 </script> 提前闭合注入的脚本块
+  const json = JSON.stringify({ gid, games }).replace(/</g, '\\u003c');
+  return `<script>window.__PAGE__=${json}</script>`;
+}
+async function composePage(req, res, templateFile, fills) {
+  let html = await fsp.readFile(path.join(PUBLIC_DIR, templateFile), 'utf8');
+  const modals = await fsp.readFile(path.join(PUBLIC_DIR, 'fragments', 'shared_modals.html'), 'utf8');
+  const all = { '<!--@MODALS-->': modals, ...fills };
+  // 替换值经函数返回：防面板 HTML 中的 $ 序列被 String.replace 当作特殊替换模式
+  for (const [mark, val] of Object.entries(all)) html = html.replace(mark, () => val);
+  sendCached(req, res, html, 'text/html; charset=utf-8', 'no-cache');
+}
+const serveHome = (req, res) => composePage(req, res, 'index.html', { '<!--@PAGEMETA-->': pageMetaScript(null) });
+route('GET', '/', serveHome);
+route('GET', '/index.html', serveHome); // 直接访问模板路径也给组装后的成品
+route('GET', /^\/g\/([a-z0-9_-]+)\/?$/, async (req, res, m) => {
+  const gid = m[1], man = registry.manifests[gid];
+  if (!man) { res.writeHead(404); return res.end('Not Found'); }
+  const panel = await fsp.readFile(path.join(__dirname, 'games', gid, 'public', 'panel.html'), 'utf8');
+  const scripts = ((man.client && man.client.scripts) || []).map((s) => `<script src="${s}"></script>`).join('\n  ');
+  await composePage(req, res, 'game.html', {
+    '<!--@TITLE-->': man.name,
+    '<!--@PANEL-->': panel,
+    '<!--@PAGEMETA-->': pageMetaScript(gid),
+    '<!--@SCRIPTS-->': scripts,
   });
 });
 

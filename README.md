@@ -42,6 +42,7 @@ npm run test:rules      # 钳王争霸规则 v2.1 §5.3 全部官方示例
 
 ```
 server.js            # 平台层 HTTP 服务器：HTTP 基建、账号体系、静态资源、前端共享资产、
+                     # 页面组装（MPA：/ 首页 + /g/<id> 游戏页，注册表驱动）、
                      # 游戏路由挂载循环（新增游戏无需改动本文件）
 auth.js              # 密码 scrypt 哈希 + 签名 Cookie 会话 + 邮箱验证 token（HMAC）
 db.js                # node:sqlite 持久化（P3 统一数据层）：accounts + 统一 players/密钥/版本/battles/
@@ -68,12 +69,14 @@ games/               # 游戏目录（一款游戏 = 一个目录）
     guide.js         #     Agent 指南（游戏专属段落 + 平台段落拼装）
     engine/          #     引擎：rules_core/rules_metered/engine_quota/sandbox/smoke/
                      #     play_session/templates_factory/training_bots/builtins
-    public/          #     前端插件（P4）：panel.html（子导航+面板+专属弹窗，按 data-slot 注入）
-                     #     + app.js（交互逻辑，与壳共享全局作用域）
+    public/          #     前端插件（MPA）：panel.html（面板+专属弹窗，服务器组装 /g/clawclash
+                     #     时原文内联）+ app.js（交互逻辑，与壳共享全局作用域）
   prisoner/          #   囚徒困境（结构同构：index.js / server.js / guide.js / engine/ / public/）
-public/              # 前端平台壳（P4 插件化）：index.html（骨架 + 共享弹窗）、platform.js（共享工具
-                     # + 登录态 + 选手创建/头像组件 + 插件加载器：按 /api/games 注入面板并加载脚本）、
-                     # style.css（全站样式）；游戏面板与交互逻辑在 games/<id>/public/
+public/              # 前端平台壳（MPA）：index.html（首页模板）、game.html（游戏页模板 /g/<id>）、
+                     # fragments/shared_modals.html（共享弹窗片段，两模板组装时注入）、
+                     # platform.js（共享工具 + 登录态 + 选手创建/头像组件 + 游戏页 hash 路由：
+                     # tab 级深链接 /g/<id>#leaderboard，可分享、刷新保位）、style.css（全站样式）；
+                     # 游戏面板与交互逻辑在 games/<id>/public/
 GameDesign/          # 规则与策划文档（.md，唯一来源，不含运行代码）
 test/                # node --test 测试族（npm test）：
                      #   scoring/locks/settle 单元测试 + api.e2e 端到端冒烟（起真实服务器 + DB_PATH 临时库）
@@ -97,7 +100,7 @@ test_rules.js        # 钳王争霸规则单元测试（针对 games/clawclash/e
 
 1. 新建 `games/<id>/` 目录：`index.js`（manifest：元数据、子进程任务、限额、指南、前端脚本清单——**不得 require db**，会被 runner 子进程加载）、`server.js`（服务端适配：`db.gameStore('<id>')` 即得全套数据读写，加上视图、挑战执行、专属路由）、`guide.js`、`engine/`、`public/`（前端插件：`panel.html` + `app.js`）。
 2. 在 `games/registry.js` 登记 `<id>`。
-3. 完事。根目录 `server.js`、`platform/`、`db.js`、`public/`（壳）均无需改动：新游戏自动获得全套 API（`/api/games/<id>/…`）、统一数据层（选手/密钥/版本/战报/反刷分，零 schema 工作）、天梯微缓存、结算/并发保护、Agent 指南路由，且前端主导航自动出现该游戏（壳按 `/api/games` 注入面板并加载脚本）。若有超出统一战报核心的数据（如钳王的逐局棋谱），用 `battles.ext/blob` 或经 `db.db` 句柄自建游戏私有表。
+3. 完事。根目录 `server.js`、`platform/`、`db.js`、`public/`（壳）均无需改动：新游戏自动获得全套 API（`/api/games/<id>/…`）、统一数据层（选手/密钥/版本/战报/反刷分，零 schema 工作）、天梯微缓存、结算/并发保护、Agent 指南路由，且游戏页 `/g/<id>` 自动可用（服务器按注册表组装：面板内联 + manifest 脚本注入），首页游戏卡与侧栏切换器自动出现该游戏。若有超出统一战报核心的数据（如钳王的逐局棋谱），用 `battles.ext/blob` 或经 `db.db` 句柄自建游戏私有表。
 
 ## 文档
 

@@ -1,4 +1,5 @@
-<!-- 囚徒困境 · 前端面板片段（由平台壳按 data-slot 注入：panel→#gameHost、overlays→body）
+<!-- 囚徒困境 · 前端面板片段（MPA：服务器组装 /g/prisoner 时原文内联进 #gameHost；
+     data-slot="overlays" 的专属弹窗由壳脚本启动时移到 body 末）
      二级导航（试玩/天梯榜/我的囚徒/Agent 指南）由壳按 manifest.client.nav 统一渲染在侧栏，此处不再自带 subnav。 -->
 <section id="section-prisoner" class="section-panel" data-slot="panel">
     <!-- 试玩（人机对战，不限回合数） -->

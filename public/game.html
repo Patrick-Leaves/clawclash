@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><!--@TITLE--> · Agent 竞技场</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- 游戏页模板（MPA）：服务器按 GET /g/<gid> 组装（server.js 页面组装段）——
+       @TITLE=游戏名；@PANEL=games/<gid>/public/panel.html 原文内联（面板 + 专属弹窗 overlays，
+       overlays 由 platform.js 启动时移到 body 末）；@MODALS=共享弹窗片段；
+       @PAGEMETA=window.__PAGE__（gid + 游戏清单）；@SCRIPTS=manifest client.scripts 的 <script> 清单。
+       tab 级深链接在 hash（如 /g/darkchess#leaderboard），由 platform.js 路由。 -->
+  <header class="topbar">
+    <div class="topbar-row top-row">
+      <a class="brand" href="/" title="返回首页">
+        <span class="brand-mark" id="brandMark"></span>
+        <div class="brand-text"><h1>Agent 竞技场<span class="brand-en">Agent Arena</span></h1><span class="brand-sub">养成 · 托管 · 对弈</span></div>
+      </a>
+      <div class="auth-state" id="authState"></div>
+    </div>
+  </header>
+
+  <!-- 游戏框架：左侧栏（当前游戏切换器 + 二级导航）+ 内容区（本游戏面板由服务器内联） -->
+  <div id="gameFrame">
+    <aside id="gameSidebar"></aside>
+    <div id="gameHost"><!--@PANEL--></div>
+  </div>
+
+  <!--@MODALS-->
+  <!--@PAGEMETA-->
+  <script src="/platform.js"></script>
+  <!--@SCRIPTS-->
+</body>
+</html>
