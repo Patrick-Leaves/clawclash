@@ -44,7 +44,7 @@ async function loadPrisonerLeaderboard() {
   const hint = $('pdRangeHint');
   if (hint && PD_META) hint.textContent = `每场正式对战实际进行 ${PD_META.minRounds}–${PD_META.maxRounds} 回合（开局区间随机抽取，对囚徒 Bot 隐藏）。`;
   const tbody = $('plbBody');
-  tbody.innerHTML = '<tr><td colspan="7" class="muted-center">加载中…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" class="muted-center"><span class="spinner"></span>加载中…</td></tr>';
   const data = await apiFetch('GET', '/api/leaderboard/prisoner');
   if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
   renderLeaderboardRows(tbody, data.leaderboard, {
@@ -103,7 +103,7 @@ async function renderMyPrisoner() {
 }
 
 async function loadPrisonerVersions() {
-  const box = $('psubBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('psubBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/prisoner/me/versions');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   renderVersionList(box, r.versions, '/api/prisoner/me/version'); // 版本列表 + 查看脚本：壳共享组件
@@ -132,7 +132,7 @@ function bindPdReplays(root) {
   root.querySelectorAll('[data-pmatch]').forEach((b) => b.addEventListener('click', () => openPdReplay(b.dataset.pmatch)));
 }
 async function loadMyPrisonerMatches() {
-  const box = $('psubBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('psubBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/prisoner/me/matches');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   if (!r.battles.length) { box.innerHTML = '<div class="muted-center">还没有正式对战记录。</div>'; return; }
@@ -143,7 +143,7 @@ async function loadMyPrisonerMatches() {
 async function showPublicPrisoner(prisonerId) {
   document.querySelectorAll('.ptab-panel').forEach((p) => p.classList.remove('active'));
   $('ptab-ppublic').classList.add('active');
-  const box = $('ppublicBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('ppublicBody'); box.innerHTML = loadingHtml();
   const [info, ms] = await Promise.all([
     apiFetch('GET', `/api/prisoners/${prisonerId}/public`),
     apiFetch('GET', `/api/prisoners/${prisonerId}/matches/public`),
@@ -264,7 +264,7 @@ function pdPlayReset(alsoClearOpp) {
 async function openPdOppPicker() {
   openModal('pdOppModal');
   const tBox = $('pdOppTraining'), pBox = $('pdOppPlayers');
-  tBox.innerHTML = '<div class="muted-center">加载中…</div>';
+  tBox.innerHTML = loadingHtml();
   pBox.innerHTML = '';
   const r = await apiFetch('GET', '/api/prisoner/opponents');
   if (!r.ok) { tBox.innerHTML = `<div class="muted-center">${esc(r.error || '加载失败')}</div>`; return; }

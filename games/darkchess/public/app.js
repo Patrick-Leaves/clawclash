@@ -96,7 +96,7 @@ function openDarkchessAvatarEditor(currentAvatar) { openAvatarEditorShared(DQ_PL
 async function renderMyDarkchess() {
   const box = $('dqMybotBody');
   if (!(ME && ME.account)) { box.innerHTML = '<div class="empty-hero"><h2>请先登录</h2><p>登录后即可创建并管理你的棋手。</p></div>'; return; }
-  box.innerHTML = '<div class="muted-center">加载中…</div>';
+  box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/games/darkchess/me');
   if (r.__status === 404) {
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="dqCreateOpen">创建棋手 →</button></div>`;
@@ -126,7 +126,7 @@ async function renderMyDarkchess() {
 // ============================================================
 async function showDqDetail() {
   showDqTab('dqdetail');
-  const box = $('dqDetailBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('dqDetailBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/games/darkchess/me');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const b = r.darkchess;
@@ -157,7 +157,7 @@ async function showDqDetail() {
 }
 
 async function loadDqVersions() {
-  const box = $('dqSubBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('dqSubBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/games/darkchess/me/versions');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   renderVersionList(box, r.versions, '/api/games/darkchess/me/version'); // 版本列表 + 查看脚本：壳共享组件
@@ -184,7 +184,7 @@ function bindDqReplays(root) {
   root.querySelectorAll('[data-dqmatch]').forEach((btn) => btn.addEventListener('click', () => openDqMatch(btn.dataset.dqmatch)));
 }
 async function loadDqMyMatches() {
-  const box = $('dqSubBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('dqSubBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/games/darkchess/me/matches');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   if (!r.battles.length) { box.innerHTML = '<div class="muted-center">还没有正式对战记录。</div>'; return; }
@@ -488,7 +488,7 @@ async function openDqMatch(urlId) {
 // ============================================================
 async function showDqPublic(id) {
   showDqTab('dqpublic');
-  const box = $('dqPublicBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('dqPublicBody'); box.innerHTML = loadingHtml();
   const [info, ms] = await Promise.all([
     apiFetch('GET', `/api/games/darkchess/players/${id}/public`),
     apiFetch('GET', `/api/games/darkchess/players/${id}/matches/public`),
@@ -522,7 +522,7 @@ async function showDqPublic(id) {
 // ============================================================
 async function loadDqLeaderboard() {
   const tbody = $('dqLbBody');
-  tbody.innerHTML = '<tr><td colspan="7" class="muted-center">加载中…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" class="muted-center"><span class="spinner"></span>加载中…</td></tr>';
   const data = await apiFetch('GET', '/api/games/darkchess/leaderboard');
   if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
   renderLeaderboardRows(tbody, data.leaderboard, {
@@ -646,8 +646,14 @@ function dqBuildBoardCells() {
 function dqCellAt(x, y) { return document.querySelector(`#dqBoard .dq-cell[data-x="${x}"][data-y="${y}"]`); }
 
 let dqAnimating = false; // 落子动效播放中：锁输入，保证「上一步动画播完才播下一步」
+let dqBusy = false;      // 提交处理中（含等待服务器/对手 bot 应手）：锁输入，杜绝并发重复提交
 function dqCanAct() {
-  return dqState && !dqAnimating && !dqState.status.over && (dqIsLocal || dqState.toMoveSeat === dqState.humanSeat);
+  return dqState && !dqAnimating && !dqBusy && !dqState.status.over && (dqIsLocal || dqState.toMoveSeat === dqState.humanSeat);
+}
+// 试玩状态栏「等待对方 bot」提示（vs 玩家棋手时，等服务器沙箱跑对手应手期间显示）
+function dqSetWaiting() {
+  const el = $('dqStatusLine');
+  if (el) { el.className = 'status-line busy'; el.innerHTML = '<span class="spinner"></span>已落子，等待对方 bot 应手…'; }
 }
 function dqMySideNow() {
   if (!dqState || !dqState.colorOf) return null;
@@ -661,7 +667,7 @@ function dqLegalDestinationsFrom(from) {
 
 // 只画棋盘 token（清格 + 按给定棋盘重建棋子），不加提示/高亮/选中——供落子动效逐帧渲染中间态复用。
 function dqRenderBoardOnly(board) {
-  document.querySelectorAll('#dqBoard .dq-cell').forEach((c) => { c.classList.remove('sel', 'dq-hint', 'lastfrom', 'lastto'); c.innerHTML = ''; });
+  document.querySelectorAll('#dqBoard .dq-cell').forEach((c) => { c.classList.remove('sel', 'dq-hint', 'lastfrom', 'lastto', 'dq-flip-pending'); c.innerHTML = ''; });
   if (!board) return;
   for (let x = 0; x < DQ_W; x++) for (let y = 0; y < DQ_H; y++) {
     const cell = board[x][y];
@@ -745,6 +751,7 @@ function dqRenderMoveList() {
 function dqRenderStatus() {
   const banner = $('dqResultBanner');
   const status = $('dqStatusLine');
+  status.className = 'status-line'; // 清掉「等待对方」busy 态（dqSetWaiting 设的）
   if (!dqState) {
     banner.className = 'result-banner hidden';
     status.textContent = '选择对手，点击「开始对局」试玩';
@@ -868,28 +875,64 @@ $('dqStartPlayBtn').addEventListener('click', () => dqStartPlay(false));
 $('dqStartLocalBtn').addEventListener('click', () => dqStartPlay(true));
 
 async function dqSubmitAction(action) {
-  if (!dqState || dqState.status.over) return;
+  if (!dqState || dqState.status.over || dqBusy || dqAnimating) return; // 锁：杜绝并发/重入（修「点了没动画」）
   const prevBoard = dqCloneBoard(dqState.board); // submit 前快照，供落子动效计算滑入/吃子/翻子
   const prevLen = dqState.history.length;
+  const seat = dqState.toMoveSeat;
 
+  // ---- 本地/训练：全程浏览器推演、零网络，直接串行播放 ----
   if (dqLocalMatchState) {
+    dqBusy = true;
     try {
-      const r = window.DarkchessEngine.stepAction(dqLocalMatchState, dqLocalMatchState.turnSeat, action);
-      if (r) dqLocalMatchState.__status = r;
-    } catch (e) { toast('本地对局出错：' + (e && e.message || e)); return; }
-    dqLocalRunUntilHumanOrEnd();
-    dqSyncStateFromLocal();
-    await dqAnimateNewSteps(prevBoard, prevLen); // 串行播放本次新增各步动画，末了 dqRenderAll 权威同步
+      try {
+        const r = window.DarkchessEngine.stepAction(dqLocalMatchState, dqLocalMatchState.turnSeat, action);
+        if (r) dqLocalMatchState.__status = r;
+      } catch (e) { toast('本地对局出错：' + (e && e.message || e)); dqBusy = false; return; }
+      dqLocalRunUntilHumanOrEnd();
+      dqSyncStateFromLocal();
+      dqBusy = false;                               // 先清锁再播动画（末帧 dqRenderAll 才画得出可交互提示）
+      await dqAnimateNewSteps(prevBoard, prevLen);
+    } finally { dqBusy = false; }
     return;
   }
 
-  const newHistory = dqState.history.concat([{ seat: dqState.toMoveSeat, action, pass: false }]);
-  const body = { mode: dqState.mode, seed: dqState.seed, history: newHistory };
-  if (dqState.mode === 'vs') Object.assign(body, { humanSeat: dqState.humanSeat }, dqOpponentSpec);
-  const r = await apiFetch('POST', '/api/games/darkchess/play', body);
-  if (!r.ok) { toast(r.error || '走子失败'); dqSelectedFrom = null; dqRenderBoard(); return; }
-  dqState = r;
-  await dqAnimateNewSteps(prevBoard, prevLen);
+  // ---- 挑战玩家棋手（vs）：不可信对手脚本须走服务器沙箱，可能有网络/执行延迟 ----
+  dqBusy = true;
+  try {
+    // A2 即时反馈：人类这步先本地播动画——走子结果确定可即时滑入/吃子；翻子身份未知（待服务器揭示），仅给「翻开中」脉冲。
+    let baseBoard = prevBoard, animFrom = prevLen;
+    if (action.action === 'move') {
+      const rec = dqReconstructStep(prevBoard, { seat, action, captured: [], revealed: null, pass: false });
+      dqRenderBoardOnly(rec.board);
+      if (rec.anim) await dqPlayStepAnim(rec.anim);  // 人类走子/吃子动画立刻播，不等服务器
+      baseBoard = rec.board; animFrom = prevLen + 1; // 服务器返回后只补播对手 bot 的新增步
+    } else {
+      dqMarkFlipPending(action.at);                  // 翻子：即时脉冲反馈（真身待服务器揭示后再翻开）
+    }
+    dqSetWaiting();                                  // A3 「已落子，等待对方 bot 应手…」
+
+    const newHistory = dqState.history.concat([{ seat, action, pass: false }]);
+    const body = { mode: dqState.mode, seed: dqState.seed, history: newHistory };
+    if (dqState.mode === 'vs') Object.assign(body, { humanSeat: dqState.humanSeat }, dqOpponentSpec);
+    let r;
+    try { r = await apiFetch('POST', '/api/games/darkchess/play', body); }
+    catch (e) { r = { ok: false, error: '网络错误，请重试' }; }
+    if (!r.ok) {                                     // A4 兜底：回滚到落子前权威态，解锁恢复可走
+      toast(r.error || '走子失败');
+      dqSelectedFrom = null;
+      dqBusy = false;
+      dqRenderAll();
+      return;
+    }
+    dqState = r;
+    dqBusy = false;                                  // 清锁，交给 dqAnimateNewSteps（dqAnimating 接管动画锁）
+    await dqAnimateNewSteps(baseBoard, animFrom);    // 只补播对手 bot 新增步（人类步已即时播过）
+  } finally { dqBusy = false; }
+}
+// 翻子即时反馈：服务器未揭示前，先给被点格一个「翻开中」脉冲（真身回来后 dqAnimateNewSteps 再播翻开动画）。
+function dqMarkFlipPending(at) {
+  const el = dqCellAt(at[0], at[1]);
+  if (el) el.classList.add('dq-flip-pending');
 }
 
 function dqOnCellClick(x, y) {

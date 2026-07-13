@@ -43,6 +43,25 @@ function toast(msg) {
 }
 function openModal(id) { $(id).classList.remove('hidden'); }
 function closeModal(id) { $(id).classList.add('hidden'); }
+// 「点击即异步」按钮的统一进行中态：立即禁用（防重复提交）+ 显示 spinner，await 结束（成功/失败/异常）后恢复。
+// loadingText 非空 → 按钮内显示「⟳ 文案」；为空 → 覆盖式转圈（隐去原文字、保持原宽高不跳动）。
+// 返回 asyncFn 的结果；若按钮已在进行中（disabled）则直接忽略本次点击。
+async function withBtnLoading(btn, asyncFn, loadingText) {
+  if (!btn) return asyncFn();
+  if (btn.disabled) return; // 已在进行中，忽略重复点击
+  const prevHtml = btn.innerHTML;
+  btn.disabled = true;
+  if (loadingText) { btn.innerHTML = `<span class="spinner"></span>${esc(loadingText)}`; }
+  else { btn.classList.add('is-loading'); }
+  try { return await asyncFn(); }
+  finally {
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+    if (loadingText) btn.innerHTML = prevHtml;
+  }
+}
+// 异步内容占位（tab 切换/列表加载统一）：spinner + 文案
+function loadingHtml(text = '加载中…') { return `<div class="muted-center"><span class="spinner"></span>${esc(text)}</div>`; }
 // 弹窗关闭按钮 / 遮罩点击：在游戏面板注入后统一绑定（覆盖壳与各游戏的弹窗），可重复调用
 function bindModalChrome() {
   document.querySelectorAll('[data-close]').forEach((b) => {
@@ -634,11 +653,11 @@ function renderAuthState() {
   if (ME && ME.account) {
     el.innerHTML = `<span class="who">${esc(ME.account.nickname)}</span><button class="mini" id="logoutBtn">登出</button>`;
     // 游戏页登出 → 整页回首页（状态自然重置）；首页登出 → 原地刷新登录态
-    $('logoutBtn').addEventListener('click', async () => {
+    $('logoutBtn').addEventListener('click', () => withBtnLoading($('logoutBtn'), async () => {
       await apiFetch('POST', '/api/auth/logout');
       if (IS_GAME_PAGE) { location.href = '/'; return; }
       await refreshMe(); toast('已登出');
-    });
+    }));
   } else {
     el.innerHTML = `<button class="primary mini" id="openRegisterBtn">注册</button><button class="mini" id="openLoginBtn">登录</button>`;
     $('openRegisterBtn').addEventListener('click', () => openAuth('register'));
@@ -675,7 +694,7 @@ function validateRegister() {
 }
 ['reg-nick','reg-email','reg-pw','reg-pw2'].forEach((id) => $(id).addEventListener('input', () => { validateRegister(); if (id === 'reg-nick') $('err-nick').textContent = ''; }));
 
-$('regBtn').addEventListener('click', async () => {
+$('regBtn').addEventListener('click', () => withBtnLoading($('regBtn'), async () => {
   const body = { nickname: $('reg-nick').value.trim(), email: $('reg-email').value.trim(), password: $('reg-pw').value };
   const r = await apiFetch('POST', '/api/account/register', body);
   if (r.ok) {
@@ -695,9 +714,9 @@ $('regBtn').addEventListener('click', async () => {
     return;
   }
   $('err-pw2').textContent = r.error || '注册失败'; $('err-pw2').classList.remove('ok');
-});
+}, '注册中…'));
 
-$('loginBtn').addEventListener('click', async () => {
+$('loginBtn').addEventListener('click', () => withBtnLoading($('loginBtn'), async () => {
   const body = { email: $('login-email').value.trim(), password: $('login-pw').value };
   const r = await apiFetch('POST', '/api/auth/login', body);
   if (r.ok) {
@@ -707,7 +726,7 @@ $('loginBtn').addEventListener('click', async () => {
     return;
   }
   $('err-login').textContent = r.error || '登录失败';
-});
+}, '登录中…'));
 
 // 演示环境：服务端直接回链接 → 弹窗给出可点击链接；生产环境走真实邮件
 function showVerifyLink(verifyUrl) {
@@ -738,12 +757,12 @@ function verifyBannerHtml() {
 function bindVerifyBanner(root, refresh) {
   const btn = root.querySelector('[data-resend-verify]');
   if (!btn) return;
-  btn.addEventListener('click', async () => {
+  btn.addEventListener('click', () => withBtnLoading(btn, async () => {
     const r = await apiFetch('POST', '/api/account/resend-verification');
     if (!r.ok) return toast(r.error || '发送失败');
     if (r.emailVerified) { toast('邮箱已验证'); await refreshMe(); refresh && refresh(); return; }
     showVerifyLink(r.verifyUrl);
-  });
+  }, '发送中…'));
 }
 
 // ============================================================
@@ -834,20 +853,23 @@ function openAvatarEditorShared(cfg, currentAvatar) {
   renderAvatarPicker(); openModal('createBotModal');
 }
 
-$('createBotBtn').addEventListener('click', async () => {
+$('createBotBtn').addEventListener('click', () => {
   if (!avatarCtx || avatarCtx.mode !== 'create') return;
   const { cfg } = avatarCtx;
   const name = $('bot-name').value.trim();
   if (!name) { $('err-botname').textContent = `请填写${cfg.noun}名称`; return; }
-  // 提交前再查一次占用，避免输入后未触发防抖检查就直接提交
-  const chk = await apiFetch('GET', cfg.urls.nameCheck + '?name=' + encodeURIComponent(name));
-  if (chk.ok && !chk.available) { $('err-botname').classList.remove('ok'); $('err-botname').textContent = `该名称已被其他${cfg.noun}占用，换一个吧`; return; }
-  const presetForCreate = selectedAvatar === 'upload' ? 'preset:1' : selectedAvatar;
-  const r = await apiFetch('POST', cfg.urls.create, { name, avatar: presetForCreate });
-  if (!r.ok) { $('err-botname').classList.remove('ok'); $('err-botname').textContent = r.error || '创建失败'; return; }
-  if (pendingUploadDataUrl) await apiFetch('POST', cfg.urls.upload, { dataUrl: pendingUploadDataUrl });
-  closeModal('createBotModal');
-  cfg.onCreated && await cfg.onCreated(r);
+  // 建号链了 查重→创建→(头像上传)→刷新 多个请求，全程禁用按钮 + spinner，防重复提交与"点了没反应"。
+  withBtnLoading($('createBotBtn'), async () => {
+    // 提交前再查一次占用，避免输入后未触发防抖检查就直接提交
+    const chk = await apiFetch('GET', cfg.urls.nameCheck + '?name=' + encodeURIComponent(name));
+    if (chk.ok && !chk.available) { $('err-botname').classList.remove('ok'); $('err-botname').textContent = `该名称已被其他${cfg.noun}占用，换一个吧`; return; }
+    const presetForCreate = selectedAvatar === 'upload' ? 'preset:1' : selectedAvatar;
+    const r = await apiFetch('POST', cfg.urls.create, { name, avatar: presetForCreate });
+    if (!r.ok) { $('err-botname').classList.remove('ok'); $('err-botname').textContent = r.error || '创建失败'; return; }
+    if (pendingUploadDataUrl) await apiFetch('POST', cfg.urls.upload, { dataUrl: pendingUploadDataUrl });
+    closeModal('createBotModal');
+    cfg.onCreated && await cfg.onCreated(r);
+  }, `创建${cfg.noun}中…`);
 });
 
 $('avatarFile').addEventListener('change', (e) => {

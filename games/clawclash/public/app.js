@@ -76,7 +76,7 @@ function miniIcon(side) { return `<span class="mini-icon">${tokenSvg(side)}</spa
 async function renderMyBot() {
   const box = $('mybotBody');
   if (!(ME && ME.account)) { box.innerHTML = '<div class="empty-hero"><h2>请先登录</h2><p>登录后即可创建并管理你的棋手。</p></div>'; return; }
-  box.innerHTML = '<div class="muted-center">加载中…</div>';
+  box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/bot/me');
   if (r.__status === 404) {
     box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="createBotOpen">创建棋手 →</button></div>`;
@@ -105,7 +105,7 @@ async function renderMyBot() {
 // ============================================================
 async function showDetail() {
   showTab('detail');
-  const box = $('detailBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('detailBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/bot/me');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const b = r.bot;
@@ -136,7 +136,7 @@ async function showDetail() {
 }
 
 async function loadVersions() {
-  const box = $('subBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('subBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/bot/me/versions');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   renderVersionList(box, r.versions, '/api/bot/me/version'); // 版本列表 + 查看脚本：壳共享组件
@@ -169,7 +169,7 @@ function bindBattleReplays(root, battles) {
   }));
 }
 async function loadMyMatches() {
-  const box = $('subBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('subBody'); box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/bot/me/matches');
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   if (!r.battles.length) { box.innerHTML = '<div class="muted-center">还没有正式对战记录。</div>'; return; }
@@ -182,7 +182,7 @@ async function loadMyMatches() {
 // ============================================================
 async function showPublicBot(botId) {
   showTab('publicbot');
-  const box = $('publicBody'); box.innerHTML = '<div class="muted-center">加载中…</div>';
+  const box = $('publicBody'); box.innerHTML = loadingHtml();
   const [info, ms] = await Promise.all([
     apiFetch('GET', `/api/bots/${botId}/public`),
     apiFetch('GET', `/api/bots/${botId}/matches/public`),
@@ -219,7 +219,7 @@ async function showPublicBot(botId) {
 // ============================================================
 async function loadLeaderboard() {
   const tbody = $('lbBody');
-  tbody.innerHTML = '<tr><td colspan="7" class="muted-center">加载中…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" class="muted-center"><span class="spinner"></span>加载中…</td></tr>';
   const data = await apiFetch('GET', '/api/leaderboard');
   if (!data.ok) { tbody.innerHTML = `<tr><td colspan="7" class="muted-center">${esc(data.error || '加载失败')}</td></tr>`; return; }
   renderLeaderboardRows(tbody, data.leaderboard, {
@@ -315,6 +315,7 @@ function nextSideToMove(){
 }
 function updateStatusLine(){
   const banner=$('resultBanner');
+  $('statusLine').className='status-line'; // 清「等待对方」busy 态（下方按需重置）
   if(!play.started){
     banner.className='result-banner hidden';
     $('statusLine').textContent=play.mode==='local'
@@ -337,7 +338,7 @@ function updateStatusLine(){
     return;
   }
   banner.className='result-banner hidden';
-  if(play.busy&&play.mode!=='local'){ $('statusLine').textContent='你已落子，对手思考中…'; return; }
+  if(play.busy&&play.mode!=='local'){ $('statusLine').className='status-line busy'; $('statusLine').innerHTML='<span class="spinner"></span>你已落子，等待对方 bot 应手…'; return; }
   if(play.mode==='local'){
     const nm=play.toMove==='black'?play.p1:play.p2;
     $('statusLine').textContent=play.sel?'点击高亮格完成走子，或点其他棋子换选':`轮到 ${SIDE_LABEL[play.toMove]||''} · ${nm}：点击棋子走子`;
