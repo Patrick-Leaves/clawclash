@@ -174,6 +174,89 @@ const Platform = {
 };
 
 // ============================================================
+// 棋盘动效（钳王/暗棋 · 试玩+回放共用）：基于 Web Animations API 的 移动/吃子/翻子 基元。
+// 每个基元返回 Promise（动画结束/被取消即 resolve），供调用方串行等待——上一步动画播完才播下一步。
+// 移动=从起点位移滑入；翻子=绕 Y 轴翻入；吃子=被吃子滑出棋盘外再消失（炮吃暗子则滑出后翻开亮明、停 1 秒再消散）。
+// 尊重 prefers-reduced-motion：开启时直接跳过（棋子瞬间到位，不做动画）。
+// ============================================================
+Platform.boardAnim = {
+  MOVE_MS: 320, FLIP_MS: 360, CAP_OUT_MS: 420, CAP_VANISH_MS: 300, CAP_REVEAL_MS: 380, REVEAL_HOLD_MS: 1000, STEP_GAP_MS: 120,
+  reduced() { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } },
+  wait(ms) { return new Promise((r) => setTimeout(r, ms)); },
+  // 等一段动画结束：以 finished 为准（前台精确），并与「时长 + 余量」的定时器竞速兜底——
+  // 后台标签页里 WAAPI 时间线冻结、finished 永不 resolve，但 setTimeout 仍会（受限）触发，
+  // 从而保证串行链不会永久卡死（回到前台自愈继续播放）。结束或被取消都 resolve，绝不 reject。
+  _fin(anim) {
+    let ms = 1200;
+    try { const t = anim.effect.getComputedTiming(); ms = (t.delay || 0) + (t.activeDuration != null ? t.activeDuration : (t.duration || 0)); } catch (e) {}
+    return Promise.race([anim.finished.then(() => {}, () => {}), this.wait(Math.max(80, ms) + 140)]);
+  },
+  // 同一次动画步内，先压掉一格棋盘上所有 token 的基础 drop 动画，避免静止子每帧「重新弹入」。
+  stillFrame(boardEl) { if (boardEl) boardEl.querySelectorAll('.token,.dq-token').forEach((t) => { t.style.animation = 'none'; }); },
+  // token 现位于 toCell（终局渲染）；令其从 fromCell 的位置滑入。滑行时抬升所在格层级，压过其它子（吃子穿越感）。
+  slide(tokenEl, fromCell, toCell, ms) {
+    if (!tokenEl || !fromCell || !toCell || this.reduced()) return Promise.resolve();
+    const a = fromCell.getBoundingClientRect(), b = toCell.getBoundingClientRect();
+    const dx = a.left - b.left, dy = a.top - b.top;
+    if (!dx && !dy) return Promise.resolve();
+    tokenEl.style.animation = 'none';
+    const cell = tokenEl.closest('.cell,.dq-cell'); const prevZ = cell ? cell.style.zIndex : '';
+    if (cell) cell.style.zIndex = '6';
+    const anim = tokenEl.animate(
+      [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0, 0)' }],
+      { duration: ms || this.MOVE_MS, easing: 'cubic-bezier(.22,.7,.3,1)' },
+    );
+    return this._fin(anim).then(() => { if (cell) cell.style.zIndex = prevZ || ''; });
+  },
+  // 翻子：token 现为已揭示面，令其绕 Y 轴从侧立翻入（自带透视，无需改容器）。
+  flipIn(tokenEl, ms) {
+    if (!tokenEl || this.reduced()) return Promise.resolve();
+    tokenEl.style.animation = 'none';
+    const anim = tokenEl.animate(
+      [
+        { transform: 'perspective(520px) rotateY(-88deg)', filter: 'brightness(1.55)', offset: 0 },
+        { transform: 'perspective(520px) rotateY(28deg)', filter: 'brightness(1.15)', offset: 0.55 },
+        { transform: 'perspective(520px) rotateY(0deg)', filter: 'brightness(1)', offset: 1 },
+      ],
+      { duration: ms || this.FLIP_MS, easing: 'cubic-bezier(.34,1.15,.64,1)' },
+    );
+    return this._fin(anim);
+  },
+  // 被吃子退场：把 ghostEl（被吃子的样子，调用方按各自 token 结构建好）从 cellEl 处「滑出棋盘外」再消失。
+  // ghost 采用 position:fixed 挂到 body，避开棋盘/弹窗的 overflow 裁剪；朝最近的左右边缘飞出。
+  // revealSwap 非空（炮吃暗子）：滑出后调用它把 ghost 由暗子换成真身、翻开亮明、停 1 秒再消散。
+  // 返回 Promise：整段退场结束后 resolve。
+  async captureOut(cellEl, boardEl, ghostEl, revealSwap) {
+    if (!cellEl || !boardEl || !ghostEl) return;
+    if (this.reduced()) { if (ghostEl.remove) ghostEl.remove(); return; }
+    const cr = cellEl.getBoundingClientRect(), br = boardEl.getBoundingClientRect();
+    const tw = cr.width * 0.82, th = cr.height * 0.82;
+    Object.assign(ghostEl.style, {
+      position: 'fixed', left: (cr.left + (cr.width - tw) / 2) + 'px', top: (cr.top + (cr.height - th) / 2) + 'px',
+      width: tw + 'px', height: th + 'px', margin: '0', pointerEvents: 'none', zIndex: '9999', animation: 'none',
+    });
+    document.body.appendChild(ghostEl);
+    const exitRight = (cr.left + cr.width / 2) >= (br.left + br.width / 2);
+    const dx = exitRight ? (br.right - cr.left + tw) : (br.left - cr.left - tw * 2);
+    const T = (ex = '') => `translate(${dx}px, 0)${ex}`;
+    // 1) 滑出棋盘外
+    await this._fin(ghostEl.animate([{ transform: 'translate(0,0)' }, { transform: T() }], { duration: this.CAP_OUT_MS, easing: 'cubic-bezier(.36,0,.66,-0.2)', fill: 'forwards' }));
+    // 2) 炮吃暗子：出界后翻开亮明真身，停 1 秒
+    if (revealSwap) {
+      try { revealSwap(ghostEl); } catch (e) {}
+      await this._fin(ghostEl.animate([
+        { transform: T(' perspective(420px) rotateY(-90deg)'), filter: 'brightness(1.6)' },
+        { transform: T(' perspective(420px) rotateY(0deg)'), filter: 'brightness(1)' },
+      ], { duration: this.CAP_REVEAL_MS, easing: 'cubic-bezier(.34,1.15,.64,1)', fill: 'forwards' }));
+      await this.wait(this.REVEAL_HOLD_MS);
+    }
+    // 3) 消失
+    await this._fin(ghostEl.animate([{ opacity: 1, transform: T(' scale(1)') }, { opacity: 0, transform: T(' scale(.4)') }], { duration: this.CAP_VANISH_MS, easing: 'ease-in', fill: 'forwards' }));
+    if (ghostEl.remove) ghostEl.remove();
+  },
+};
+
+// ============================================================
 // 内联 SVG 图标（全站零 emoji / 零素材）
 // ============================================================
 function brandMarkSvg() {

@@ -212,7 +212,74 @@ function dqActionText(h, nameOf) {
 // 对局回放（动画）：用浏览器本地的规则核心从 initialBoard 顺着 history 逐步重算棋盘，
 // 得到「翻棋渐次揭示」的帧序列——只重放实际发生过的翻棋/吃子，绝不提前剧透还没翻开的棋子。
 // ============================================================
-let dqReplay = { frames: [], cur: 0, playing: false, timer: null, meta: null };
+let dqReplay = { frames: [], cur: 0, playing: false, timer: null, meta: null, prevCur: null };
+// 被吃子的「幽灵子」DOM（吃子淡出动效用）：按棋盘格对象还原其样子（暗子 / 已揭示子）。
+function dqGhostToken(cellObj) {
+  const g = document.createElement('div');
+  if (cellObj.hidden) { g.className = 'dq-token dq-hidden'; g.textContent = '暗'; }
+  else { g.className = 'dq-token dq-' + cellObj.side; g.textContent = cellObj.label || (DQ_LABELS[cellObj.side] && DQ_LABELS[cellObj.side][cellObj.kind]) || '?'; }
+  return g;
+}
+function dqCloneBoard(b) { return b.map((col) => col.map((c) => (c ? { ...c } : c))); }
+// 重建一步之后的棋盘 + 该步动画描述。翻子用 history 的 revealed 定身份；走子用规则引擎算结果（正确处理
+// 同归于尽/炮隔子吃），失败兜底为「起点子占据目标格」。被吃子样子取走子前目标格；炮吃暗子的真身取 h.captured。
+function dqReconstructStep(board, h) {
+  const core = window.DarkchessRules;
+  if (h.pass || !h.action) return { board: dqCloneBoard(board), anim: null };
+  if (h.action.action === 'flip') {
+    const [x, y] = h.action.at; const b = dqCloneBoard(board); const rv = h.revealed || {};
+    b[x][y] = { hidden: false, side: rv.side, kind: rv.kind, label: rv.label || (DQ_LABELS[rv.side] && DQ_LABELS[rv.side][rv.kind]) };
+    return { board: b, anim: { type: 'flip', at: [x, y] } };
+  }
+  const [fx, fy] = h.action.from, [tx, ty] = h.action.to;
+  const mover = board[fx] && board[fx][fy];
+  const target = (board[tx] && board[tx][ty]) ? { ...board[tx][ty] } : null;
+  let capturedReveal = null;
+  if (target && target.hidden) { // 炮吃暗子：真身由本步 captured 元数据（含公示身份）按坐标取
+    const c = (h.captured || []).find((it) => it && it.x === tx && it.y === ty && it.side);
+    if (c) capturedReveal = { side: c.side, kind: c.kind };
+  }
+  let nb;
+  try { nb = core.applyMove(dqCloneBoard(board), mover && mover.side, h.action).board; }
+  catch (e) { nb = dqCloneBoard(board); nb[tx][ty] = nb[fx][fy]; nb[fx][fy] = null; }
+  return { board: nb, anim: { type: 'move', from: [fx, fy], to: [tx, ty], target, capturedReveal } };
+}
+// 播放单步动画（在已渲染到该步终局的棋盘上），返回 Promise（含吃子退场，await 至全部播完）。
+async function dqPlayStepAnim(anim) {
+  Platform.boardAnim.stillFrame($('dqBoard'));
+  if (anim.type === 'flip') { await Platform.boardAnim.flipIn(dqCellAt(anim.at[0], anim.at[1])?.querySelector('.dq-token')); return; }
+  const [fx, fy] = anim.from, [tx, ty] = anim.to;
+  const proms = [Platform.boardAnim.slide(dqCellAt(tx, ty)?.querySelector('.dq-token'), dqCellAt(fx, fy), dqCellAt(tx, ty))];
+  if (anim.target) {
+    const rv = anim.capturedReveal;
+    const revealSwap = (anim.target.hidden && rv && rv.side)
+      ? (el) => { el.className = 'dq-token dq-' + rv.side; el.textContent = (DQ_LABELS[rv.side] && DQ_LABELS[rv.side][rv.kind]) || '?'; }
+      : null;
+    proms.push(Platform.boardAnim.captureOut(dqCellAt(tx, ty), $('dqBoard'), dqGhostToken(anim.target), revealSwap));
+  }
+  await Promise.all(proms);
+}
+// 试玩落子动效（串行）：试玩用 live dqState，一次 submit 可能推进多步（人类 + 对手应手）。
+// 以 submit 前快照 prevBoard 为基准逐步重建棋盘，逐帧渲染并播放该步动画，必须等本步播完再进下一步；
+// 末了 dqRenderAll 权威同步侧栏/状态/终局弹层（stillFrame 压掉终态 drop，避免收尾时全盘弹跳）。
+async function dqAnimateNewSteps(prevBoard, prevLen) {
+  const hist = dqState.history.slice(prevLen);
+  if (!prevBoard || Platform.boardAnim.reduced() || !hist.some((h) => !h.pass && h.action)) { dqRenderAll(); return; }
+  let b = dqCloneBoard(prevBoard);
+  const frames = [];
+  for (const h of hist) { const rec = dqReconstructStep(b, h); frames.push({ board: rec.board, anim: rec.anim }); b = rec.board; }
+  dqAnimating = true;
+  try {
+    for (const fr of frames) {
+      if (!fr.anim) continue; // 停一手：棋盘不变，不渲染/不动画
+      dqRenderBoardOnly(fr.board);
+      await dqPlayStepAnim(fr.anim);
+      await Platform.boardAnim.wait(Platform.boardAnim.STEP_GAP_MS);
+    }
+  } finally { dqAnimating = false; }
+  dqRenderAll();
+  Platform.boardAnim.stillFrame($('dqBoard'));
+}
 
 function dqBuildReplayFrames(initialBoard, history) {
   const core = window.DarkchessRules;
@@ -312,6 +379,26 @@ function dqRenderReplayFrame() {
       dqRCellAt(h.action.to[0], h.action.to[1])?.classList.add('lastto');
     }
   }
+  // —— 走子/翻子/吃子动效：仅「前进一帧且真实动作」时播放。返回该步动画 Promise，播放循环 await 后再进下一手。——
+  let dqrAnimP = Promise.resolve();
+  if (dqReplay.prevCur !== null && dqReplay.cur === dqReplay.prevCur + 1 && h && !h.pass && h.action) {
+    const prev = dqReplay.frames[dqReplay.prevCur].board;
+    Platform.boardAnim.stillFrame($('dqRBoard'));
+    if (h.action.action === 'flip') {
+      dqrAnimP = Platform.boardAnim.flipIn(dqRCellAt(h.action.at[0], h.action.at[1])?.querySelector('.dq-token'));
+    } else {
+      const [fx, fy] = h.action.from, [tx, ty] = h.action.to;
+      const proms = [Platform.boardAnim.slide(dqRCellAt(tx, ty)?.querySelector('.dq-token'), dqRCellAt(fx, fy), dqRCellAt(tx, ty))];
+      const capd = prev[tx] && prev[tx][ty];
+      if (capd) {
+        // 回放棋盘带完整身份：暗子被吃(炮)时可直接由 capd.side/kind 翻开亮明。
+        const revealSwap = capd.hidden ? (el) => { el.className = 'dq-token dq-' + capd.side; el.textContent = (DQ_LABELS[capd.side] && DQ_LABELS[capd.side][capd.kind]) || '?'; } : null;
+        proms.push(Platform.boardAnim.captureOut(dqRCellAt(tx, ty), $('dqRBoard'), dqGhostToken(capd), revealSwap));
+      }
+      dqrAnimP = Promise.all(proms);
+    }
+  }
+  dqReplay.prevCur = dqReplay.cur;
   $('dqRBlackCount').textContent = black;
   $('dqRRedCount').textContent = red;
   // 卡片持方名：随揭示进度逐帧显示，定序完成后把挑战方/被挑战方名挂到对应色卡上。
@@ -340,25 +427,33 @@ function dqRenderReplayFrame() {
   } else {
     banner.className = 'result-banner hidden';
   }
+  return dqrAnimP;
 }
 function dqReplayGoTo(i) {
   dqReplay.cur = Math.max(0, Math.min(dqReplay.frames.length - 1, i));
-  dqRenderReplayFrame();
+  return dqRenderReplayFrame();
 }
 function dqReplayPause() {
   dqReplay.playing = false;
-  clearInterval(dqReplay.timer); dqReplay.timer = null;
+  clearTimeout(dqReplay.timer); dqReplay.timer = null;
   $('dqRPlayPause').textContent = '▶ 播放';
+}
+// 自动播放：渲染并播完本手动画（含吃子退场/翻子），再按速度滑块留间隔进下一手——上一步动画播完才播下一步。
+async function dqReplayTick() {
+  clearTimeout(dqReplay.timer);
+  if (!dqReplay.playing) return;
+  if (dqReplay.cur >= dqReplay.frames.length - 1) { dqReplayPause(); return; }
+  dqReplay.cur += 1;
+  await dqRenderReplayFrame();
+  if (!dqReplay.playing) return;
+  dqReplay.timer = setTimeout(dqReplayTick, +$('dqRSpeed').value);
 }
 function dqReplayPlay() {
   if (dqReplay.cur >= dqReplay.frames.length - 1) dqReplayGoTo(0);
   dqReplay.playing = true;
   $('dqRPlayPause').textContent = '⏸ 暂停';
-  clearInterval(dqReplay.timer);
-  dqReplay.timer = setInterval(() => {
-    if (dqReplay.cur >= dqReplay.frames.length - 1) { dqReplayPause(); return; }
-    dqReplayGoTo(dqReplay.cur + 1);
-  }, +$('dqRSpeed').value);
+  clearTimeout(dqReplay.timer);
+  dqReplayTick();
 }
 $('dqRToStart').addEventListener('click', () => { dqReplayPause(); dqReplayGoTo(0); });
 $('dqRPrev').addEventListener('click', () => { dqReplayPause(); dqReplayGoTo(dqReplay.cur - 1); });
@@ -380,7 +475,7 @@ async function openDqMatch(urlId) {
   dqReplay.colorFrames = dqColorRevealFrames(dqReplay.frames, history);
   dqReplay.names = { a: r.challengerName || '甲方', b: r.challengedName || '乙方' };
   dqReplay.meta = { winner: r.winner, reason: r.reason, turns: r.turns, challengerName: r.challengerName, challengedName: r.challengedName };
-  dqReplay.cur = 0;
+  dqReplay.cur = 0; dqReplay.prevCur = null;
   $('dqReplayTitle').textContent = `对局回放 · ${r.challengerName || '?'} vs ${r.challengedName || '?'}`;
   const rNameOf = (seat) => (seat === 'a' ? dqReplay.names.a : dqReplay.names.b);
   $('dqRMoveList').innerHTML = history.map((h) => `<li>${esc(dqActionText(h, rNameOf))}</li>`).join('');
@@ -550,8 +645,9 @@ function dqBuildBoardCells() {
 }
 function dqCellAt(x, y) { return document.querySelector(`#dqBoard .dq-cell[data-x="${x}"][data-y="${y}"]`); }
 
+let dqAnimating = false; // 落子动效播放中：锁输入，保证「上一步动画播完才播下一步」
 function dqCanAct() {
-  return dqState && !dqState.status.over && (dqIsLocal || dqState.toMoveSeat === dqState.humanSeat);
+  return dqState && !dqAnimating && !dqState.status.over && (dqIsLocal || dqState.toMoveSeat === dqState.humanSeat);
 }
 function dqMySideNow() {
   if (!dqState || !dqState.colorOf) return null;
@@ -563,18 +659,23 @@ function dqLegalDestinationsFrom(from) {
   return dqState.legalActions.filter((a) => a.action === 'move' && a.from[0] === from[0] && a.from[1] === from[1]).map((a) => a.to);
 }
 
-function dqRenderBoard() {
+// 只画棋盘 token（清格 + 按给定棋盘重建棋子），不加提示/高亮/选中——供落子动效逐帧渲染中间态复用。
+function dqRenderBoardOnly(board) {
   document.querySelectorAll('#dqBoard .dq-cell').forEach((c) => { c.classList.remove('sel', 'dq-hint', 'lastfrom', 'lastto'); c.innerHTML = ''; });
-  if (!dqState) return;
+  if (!board) return;
   for (let x = 0; x < DQ_W; x++) for (let y = 0; y < DQ_H; y++) {
-    const cell = dqState.board[x][y];
+    const cell = board[x][y];
     const el = dqCellAt(x, y);
     if (!el || !cell) continue;
     const tok = document.createElement('div');
     if (cell.hidden) { tok.className = 'dq-token dq-hidden'; tok.textContent = '暗'; }
-    else { tok.className = 'dq-token dq-' + cell.side; tok.textContent = cell.label; }
+    else { tok.className = 'dq-token dq-' + cell.side; tok.textContent = cell.label || (DQ_LABELS[cell.side] && DQ_LABELS[cell.side][cell.kind]) || '?'; }
     el.appendChild(tok);
   }
+}
+// 落子后可交互态：最近一手高亮 + 选中/可走/可翻提示（作用于已画好的终局棋盘，不重建 token → 不重复 drop 弹跳）。
+function dqPaintPlayAffordances() {
+  if (!dqState) return;
   const lastActed = [...dqState.history].reverse().find((h) => !h.pass);
   if (lastActed && lastActed.action) {
     if (lastActed.action.action === 'flip') {
@@ -590,6 +691,10 @@ function dqRenderBoard() {
   } else if (dqCanAct()) {
     dqState.legalActions.filter((a) => a.action === 'flip').forEach((a) => dqCellAt(a.at[0], a.at[1])?.classList.add('dq-hint'));
   }
+}
+function dqRenderBoard() {
+  dqRenderBoardOnly(dqState && dqState.board);
+  dqPaintPlayAffordances();
 }
 
 // 座位 → 展示名：vs 模式人类座为「你」、对手座为对手名；双人同屏用两位玩家名。
@@ -764,6 +869,8 @@ $('dqStartLocalBtn').addEventListener('click', () => dqStartPlay(true));
 
 async function dqSubmitAction(action) {
   if (!dqState || dqState.status.over) return;
+  const prevBoard = dqCloneBoard(dqState.board); // submit 前快照，供落子动效计算滑入/吃子/翻子
+  const prevLen = dqState.history.length;
 
   if (dqLocalMatchState) {
     try {
@@ -772,7 +879,7 @@ async function dqSubmitAction(action) {
     } catch (e) { toast('本地对局出错：' + (e && e.message || e)); return; }
     dqLocalRunUntilHumanOrEnd();
     dqSyncStateFromLocal();
-    dqRenderAll();
+    await dqAnimateNewSteps(prevBoard, prevLen); // 串行播放本次新增各步动画，末了 dqRenderAll 权威同步
     return;
   }
 
@@ -782,7 +889,7 @@ async function dqSubmitAction(action) {
   const r = await apiFetch('POST', '/api/games/darkchess/play', body);
   if (!r.ok) { toast(r.error || '走子失败'); dqSelectedFrom = null; dqRenderBoard(); return; }
   dqState = r;
-  dqRenderAll();
+  await dqAnimateNewSteps(prevBoard, prevLen);
 }
 
 function dqOnCellClick(x, y) {

@@ -233,6 +233,7 @@ $('refreshLb').addEventListener('click', loadLeaderboard);
 // 棋盘渲染（试玩棋盘；正式对局回放在独立弹窗，见文末）
 // ============================================================
 let state = { match: null, frames: [], cur: 0 };
+let ccPrevCur = null; // 上一次已渲染的帧号：用于判定「前进一帧」→ 播放走子/吃子动效（回退/跳帧/初始不放）
 
 function cloneBoard(b) { return b.map((col) => col.slice()); }
 function countOf(b) { let black=0,red=0; for(let x=0;x<4;x++) for(let y=0;y<4;y++){if(b[x][y]==='black')black++;else if(b[x][y]==='red')red++;} return{black,red}; }
@@ -265,6 +266,22 @@ function renderFrame(){
     const t=document.createElement('div');t.className='token '+v;t.innerHTML=tokenSvg(v);
     cellAt(x,y).appendChild(t);
   }
+  // —— 走子/吃子动效：仅「前进一帧且该帧是真实走子」时播放（回退/跳帧/初始/换选不放）——
+  // 返回该步全部动画的 Promise（滑入 + 各被吃子退场），供 stepAnim/回放逐步串行等待。
+  let animP = Promise.resolve();
+  if(ccPrevCur!==null && state.cur===ccPrevCur+1 && f.move && !f.move.pass){
+    const prev=state.frames[ccPrevCur].board;
+    Platform.boardAnim.stillFrame($('board'));
+    const [fx,fy]=f.move.from, [tx,ty]=f.move.to;
+    const proms=[Platform.boardAnim.slide(cellAt(tx,ty)?.querySelector('.token'), cellAt(fx,fy), cellAt(tx,ty))];
+    for(const [cx,cy] of f.move.captured){
+      const side=prev[cx]&&prev[cx][cy]; if(!side)continue;
+      const g=document.createElement('div'); g.className='token '+side; g.innerHTML=tokenSvg(side);
+      proms.push(Platform.boardAnim.captureOut(cellAt(cx,cy), $('board'), g, null)); // 钳王无暗子，无翻开
+    }
+    animP=Promise.all(proms);
+  }
+  ccPrevCur=state.cur;
   const mv=f.move;
   if(mv&&!mv.pass){
     cellAt(mv.from[0],mv.from[1])?.classList.add('lastfrom');
@@ -288,6 +305,7 @@ function renderFrame(){
   updateStatusLine();
   $('plyIndicator').textContent=state.frames.length>1?`第 ${state.cur} / ${state.frames.length-1} 手`:'—';
   paintPlayHints();
+  return animP;
 }
 function nextSideToMove(){
   if(play.started&&!play.over)return play.toMove;
@@ -364,7 +382,7 @@ document.querySelectorAll('[data-playmode]').forEach((btn) => btn.addEventListen
 function resetPlayBoard() {
   play.started = false; play.over = false; play.busy = false;
   play.history = []; play.legal = []; play.sel = null; play.resultShown = false;
-  state.match = null; state.frames = buildFrames(initialBoard(), []); state.cur = 0;
+  state.match = null; state.frames = buildFrames(initialBoard(), []); state.cur = 0; ccPrevCur = null;
   renderMoveList(); renderFrame(); updateUndoBtn();
   $('infoBlackName').innerHTML = `${miniIcon('black')} 黑方`;
   $('infoRedName').innerHTML = `${miniIcon('red')} 红方`;
@@ -437,7 +455,7 @@ function buildPlayMatch(r){
     winner:r.status.winner,reason:r.status.reason,turns:r.status.turns,history:r.history,
   };
 }
-function applyPlayResult(r,{animate=false,prevFrames=0}={}){
+async function applyPlayResult(r,{animate=false,prevFrames=0}={}){
   play.history=r.history;
   play.legal=r.legalMoves;
   play.over=r.status.over;
@@ -453,19 +471,22 @@ function applyPlayResult(r,{animate=false,prevFrames=0}={}){
   renderMoveList();
   // AI 模式：本地推演停在「该机器人应手」(needBot) 且未终局 → 保持忙碌，等服务器权威应手再解锁
   const keepBusy=play.mode!=='local'&&!!r.needBot&&!r.status.over;
-  const finalize=()=>{ if(!keepBusy)play.busy=false; updateUndoBtn(); renderFrame(); maybeShowResult(); };
+  // 收尾：动画已 await 播完，此时安全重渲一次以刷新可交互态（清 busy 后才能画出「可点棋子/走法」提示）；
+  // stillFrame 压掉重渲带来的 drop 弹跳。keepBusy（AI 等应手）时保持忙碌、不重渲。
+  const finalizeTail=()=>{ if(!keepBusy){ play.busy=false; updateUndoBtn(); renderFrame(); Platform.boardAnim.stillFrame($('board')); } else updateUndoBtn(); maybeShowResult(); };
   if(animate&&state.frames.length>prevFrames&&prevFrames>0){
-    // 逐帧播放新增着法（机器人应手 / 多步序列）
-    let i=prevFrames-1;
-    const stepAnim=()=>{
-      i++;state.cur=Math.min(i,state.frames.length-1);renderFrame();
-      if(i<state.frames.length-1)setTimeout(stepAnim,380);
-      else finalize();
-    };
-    stepAnim();
+    // 逐帧串行播放新增着法（机器人应手 / 多步序列）：每帧 renderFrame 返回该步动画 Promise，
+    // 必须等它播完（含吃子退场）再进下一帧，帧间留一点空隙。
+    play.busy=true; updateUndoBtn();
+    for(let i=prevFrames;i<=state.frames.length-1;i++){
+      state.cur=i;
+      await renderFrame();
+      if(i<state.frames.length-1) await Platform.boardAnim.wait(Platform.boardAnim.STEP_GAP_MS);
+    }
+    finalizeTail();
   }else{
     state.cur=state.frames.length-1;
-    finalize();
+    renderFrame(); finalizeTail();
   }
 }
 
@@ -552,10 +573,11 @@ function runLocalPlay(rawHistory, mode, humanSide, bot){
   };
 }
 // 本地推演 + 渲染（双人同屏全程、AI 人类落子即时反馈、悔棋回放都走这里，零网络）
-function localApply(history,{animate=false,bot=null}={}){
+// async：动画帧串行播放，await 后动画已全部播完（供逐手「上一步动画播完再播下一步」）。
+async function localApply(history,{animate=false,bot=null}={}){
   const prevFrames=state.frames.length;
   const r=runLocalPlay(history, play.mode, play.humanSide, bot);
-  applyPlayResult(r,{animate,prevFrames});
+  await applyPlayResult(r,{animate,prevFrames});
   return r;
 }
 // 服务器应手（仅 AI 模式：机器人开局 / 人类落子后的机器人应手）
@@ -565,7 +587,7 @@ async function postPlay(history,{animate}={}){
   const payload={humanSide:play.humanSide,history,...(play.opp.type==='bot'?{botId:play.opp.botId}:{template:play.opp.name})};
   const r=await apiFetch('POST','/api/play',payload);
   if(!r.ok){play.busy=false;updateUndoBtn();toast(r.error||'走子失败');return null;}
-  applyPlayResult(r,{animate,prevFrames});
+  await applyPlayResult(r,{animate,prevFrames});
   return r;
 }
 async function startPlay(){
@@ -577,7 +599,7 @@ async function startPlay(){
     :{type:'builtin',name:sel.value,clientBot:makeClientBuiltin(sel.value)};
   play.mode='ai';play.started=true;play.over=false;play.humanSide=$('sideSel').value;
   play.history=[];play.legal=[];play.sel=null;play.undosLeft=3;play.busy=false;play.resultShown=false;
-  state.match=null;state.frames=[];state.cur=0;
+  state.match=null;state.frames=[];state.cur=0;ccPrevCur=null;
   $('statusLine').textContent='对局开始…';
   if(play.humanSide==='black'){
     localApply([],{animate:false});      // 人类执黑先行：本地初始化，零延迟
@@ -594,7 +616,7 @@ function startLocalPlay(){
   play.p1=$('p1Name').value.trim()||'玩家 1';
   play.p2=$('p2Name').value.trim()||'玩家 2';
   play.history=[];play.legal=[];play.sel=null;play.busy=false;play.resultShown=false;
-  state.match=null;state.frames=[];state.cur=0;
+  state.match=null;state.frames=[];state.cur=0;ccPrevCur=null;
   localApply([],{animate:false});        // 双人同屏：全程本地，无需服务器
   toast(`对局开始：${play.p1} 执梭子蟹（黑方）先行，${play.p2} 执龙虾（红方）`);
 }
@@ -615,17 +637,19 @@ function onCellClick(x,y){
     renderFrame();
   }
 }
-// 人类落子：双人同屏全程本地；AI 模式先本地即时落子（零延迟），再异步取机器人应手
+// 人类落子：双人同屏全程本地；AI 模式先播人类这步动画（await 至播完），再取机器人应手并播其动画。
+// 关键：人类走子动画必须整段播完，才开始播对手 bot 的下一步动画（不再重叠）。
 async function doHumanMove(newHistory){
-  if(play.mode==='local'){ localApply(newHistory,{animate:true}); return; }
+  play.busy=true; updateUndoBtn();
+  if(play.mode==='local'){ await localApply(newHistory,{animate:true}); return; }
   const bot=play.opp&&play.opp.clientBot;
   const prevHistory=play.history;
-  const interim=localApply(newHistory,{animate:false}); // 人类这步立即落子渲染（不等网络）
+  const interim=await localApply(newHistory,{animate:true}); // 人类这步先落子并播放动画，等它播完
   if(interim.status.over) return;     // 人类落子即终局，无需应手
   if(!interim.needBot) return;        // 机器人被迫停手并已轮回人类，本地已完成
-  if(bot){ localApply(newHistory,{animate:true,bot}); return; } // 内置对手：浏览器本地应手并播放，零网络
+  if(bot){ await localApply(newHistory,{animate:true,bot}); return; } // 内置对手：接着播机器人应手动画，零网络
   const r=await postPlay(newHistory,{animate:true}); // 玩家棋手：取服务器沙箱应手并播放
-  if(!r) localApply(prevHistory,{animate:false});    // 应手失败 → 回滚到落子前，恢复人类可走
+  if(!r) await localApply(prevHistory,{animate:false});    // 应手失败 → 回滚到落子前，恢复人类可走
 }
 function undoMove(){
   if(play.undosLeft<=0||play.busy)return;
@@ -709,6 +733,7 @@ document.addEventListener('click',(e)=>{if(!e.target.closest('.search-box'))hide
 // 对局回放（正式对局 · 独立弹窗，与试玩棋盘完全隔离）
 // ============================================================
 const rstate = { match: null, frames: [], cur: 0, timer: null, playing: false };
+let rPrevCur = null; // 回放：上一次已渲染帧号，判定「前进一帧」→ 播放走子/吃子动效
 
 function rCellAt(x,y){return document.querySelector(`#rBoard .cell[data-x="${x}"][data-y="${y}"]`);}
 function buildReplayCells(){
@@ -734,6 +759,16 @@ function rRenderFrame(){
     rCellAt(mv.to[0],mv.to[1])?.classList.add('lastto');
     for(const[cx,cy]of mv.captured)rCellAt(cx,cy)?.classList.add('captured');
   }
+  // —— 走子/吃子动效：仅「前进一帧且真实走子」时播放。返回该步动画 Promise，播放循环 await 后再进下一手。——
+  let rAnimP=Promise.resolve();
+  if(rPrevCur!==null && rstate.cur===rPrevCur+1 && mv && !mv.pass){
+    const prev=rstate.frames[rPrevCur].board;
+    Platform.boardAnim.stillFrame($('rBoard'));
+    const proms=[Platform.boardAnim.slide(rCellAt(mv.to[0],mv.to[1])?.querySelector('.token'), rCellAt(mv.from[0],mv.from[1]), rCellAt(mv.to[0],mv.to[1]))];
+    for(const[cx,cy]of mv.captured){ const side=prev[cx]&&prev[cx][cy]; if(!side)continue; const g=document.createElement('div'); g.className='token '+side; g.innerHTML=tokenSvg(side); proms.push(Platform.boardAnim.captureOut(rCellAt(cx,cy), $('rBoard'), g, null)); }
+    rAnimP=Promise.all(proms);
+  }
+  rPrevCur=rstate.cur;
   $('rBlackCount').textContent=f.counts.black;
   $('rRedCount').textContent=f.counts.red;
   $('rTurnNo').textContent=f.turn;
@@ -753,11 +788,21 @@ function rRenderFrame(){
     banner.innerHTML=`${who}<small>${REASON_LABEL[m.reason]||m.reason} · 共 ${m.turns} 手</small>`;
   }else banner.className='result-banner hidden';
   $('rPlyIndicator').textContent=rstate.frames.length>1?`第 ${rstate.cur} / ${rstate.frames.length-1} 手`:'—';
+  return rAnimP;
 }
-function rGoTo(i){rstate.cur=Math.max(0,Math.min(rstate.frames.length-1,i));rRenderFrame();}
-function rStep(d){rGoTo(rstate.cur+d);}
+function rGoTo(i){rstate.cur=Math.max(0,Math.min(rstate.frames.length-1,i));return rRenderFrame();}
+function rStep(d){return rGoTo(rstate.cur+d);}
 function rPause(){rstate.playing=false;clearTimeout(rstate.timer);$('rPlayPause').textContent='▶ 播放';}
-function rTick(){clearTimeout(rstate.timer);if(!rstate.playing)return;if(rstate.cur>=rstate.frames.length-1){rPause();return;}rStep(1);rstate.timer=setTimeout(rTick,+$('rSpeed').value);}
+// 自动播放：渲染并播完本手动画（含吃子退场），再按速度滑块留间隔进下一手——上一步动画播完才播下一步。
+async function rTick(){
+  clearTimeout(rstate.timer);
+  if(!rstate.playing)return;
+  if(rstate.cur>=rstate.frames.length-1){rPause();return;}
+  rstate.cur+=1;
+  await rRenderFrame();
+  if(!rstate.playing)return; // 播放中被暂停/关闭
+  rstate.timer=setTimeout(rTick,+$('rSpeed').value);
+}
 function rPlay(){if(rstate.cur>=rstate.frames.length-1)rstate.cur=0;rstate.playing=true;$('rPlayPause').textContent='⏸ 暂停';rTick();}
 function rTogglePlay(){rstate.playing?rPause():rPlay();}
 function rRenderMoveList(){
@@ -803,7 +848,7 @@ async function loadReplayGame(idx) {
   const winnerSide = r.winner === 'draw' ? 'draw' : (r.winner === 'challenger' ? chSide : cdSide);
   rstate.match = { blackName: names.black, redName: names.red, winnerSide, reason: r.reason, turns: r.turns, history: r.gameData.history };
   rstate.frames = buildFrames(r.gameData.initialBoard, r.gameData.history);
-  rstate.cur = 0; rPause();
+  rstate.cur = 0; rPrevCur = null; rPause();
   $('replayTitle').innerHTML = `对局回放 · <span class="t-av">${avatarHtml(avatars.black)}</span>${esc(names.black || '黑方')} vs <span class="t-av">${avatarHtml(avatars.red)}</span>${esc(names.red || '红方')} · 第 ${g.gameNo} 局`;
   $('rBlackName').innerHTML = `${miniIcon('black')}<span class="r-av">${avatarHtml(avatars.black)}</span>${esc(names.black || '黑方')}`;
   $('rRedName').innerHTML = `${miniIcon('red')}<span class="r-av">${avatarHtml(avatars.red)}</span>${esc(names.red || '红方')}`;
