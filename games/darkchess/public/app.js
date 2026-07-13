@@ -564,7 +564,7 @@ function dqLegalDestinationsFrom(from) {
 }
 
 function dqRenderBoard() {
-  document.querySelectorAll('#dqBoard .dq-cell').forEach((c) => { c.classList.remove('sel', 'hint', 'lastfrom', 'lastto'); c.innerHTML = ''; });
+  document.querySelectorAll('#dqBoard .dq-cell').forEach((c) => { c.classList.remove('sel', 'dq-hint', 'lastfrom', 'lastto'); c.innerHTML = ''; });
   if (!dqState) return;
   for (let x = 0; x < DQ_W; x++) for (let y = 0; y < DQ_H; y++) {
     const cell = dqState.board[x][y];
@@ -586,9 +586,9 @@ function dqRenderBoard() {
   }
   if (dqSelectedFrom) {
     dqCellAt(dqSelectedFrom[0], dqSelectedFrom[1])?.classList.add('sel');
-    dqLegalDestinationsFrom(dqSelectedFrom).forEach(([x, y]) => dqCellAt(x, y)?.classList.add('hint'));
+    dqLegalDestinationsFrom(dqSelectedFrom).forEach(([x, y]) => dqCellAt(x, y)?.classList.add('dq-hint'));
   } else if (dqCanAct()) {
-    dqState.legalActions.filter((a) => a.action === 'flip').forEach((a) => dqCellAt(a.at[0], a.at[1])?.classList.add('hint'));
+    dqState.legalActions.filter((a) => a.action === 'flip').forEach((a) => dqCellAt(a.at[0], a.at[1])?.classList.add('dq-hint'));
   }
 }
 

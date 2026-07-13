@@ -259,7 +259,7 @@ function buildBoardCells(){
 function cellAt(x,y){return document.querySelector(`#board .cell[data-x="${x}"][data-y="${y}"]`);}
 function renderFrame(){
   const f=state.frames[state.cur];if(!f)return;
-  document.querySelectorAll('#board .cell').forEach((c)=>{c.classList.remove('lastfrom','lastto','captured','sel','hint','clickable');c.innerHTML='';});
+  document.querySelectorAll('#board .cell').forEach((c)=>{c.classList.remove('lastfrom','lastto','captured','sel','cc-hint','clickable');c.innerHTML='';});
   for(let x=0;x<4;x++)for(let y=0;y<4;y++){
     const v=f.board[x][y];if(!v)continue;
     const t=document.createElement('div');t.className='token '+v;t.innerHTML=tokenSvg(v);
@@ -424,7 +424,7 @@ function paintPlayHints(){
   for(const key of froms){const[x,y]=key.split(',').map(Number);cellAt(x,y)?.classList.add('clickable');}
   if(play.sel){
     cellAt(play.sel[0],play.sel[1])?.classList.add('sel');
-    for(const m of play.legal)if(m.from[0]===play.sel[0]&&m.from[1]===play.sel[1])cellAt(m.to[0],m.to[1])?.classList.add('hint');
+    for(const m of play.legal)if(m.from[0]===play.sel[0]&&m.from[1]===play.sel[1])cellAt(m.to[0],m.to[1])?.classList.add('cc-hint');
   }
 }
 // ---- 走子结果应用（服务器应手 与 前端本地推演 共用，payload 结构一致）----
