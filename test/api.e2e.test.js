@@ -7,6 +7,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
+const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -19,15 +20,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function startServer() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawclash-e2e-'));
   const port = 3400 + Math.floor(Math.random() * 400);
+  const env = { ...process.env };
+  for (const key of ['SMTP_HOST', 'SMTP_SECURE', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
+    'SMTP_DAILY_MAX', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'EMAIL_VERIFICATION']) delete env[key];
+  Object.assign(env, {
+    PORT: String(port),
+    DB_PATH: path.join(dir, 'e2e.db'),
+    NODE_ENV: 'test',
+    SESSION_SECRET: 'e2e-test-secret',
+  });
   const child = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
-    env: {
-      ...process.env,
-      PORT: String(port),
-      DB_PATH: path.join(dir, 'e2e.db'),
-      NODE_ENV: 'test',
-      EMAIL_VERIFICATION: '',          // 默认关闭：注册即视为已验证，可直接发起挑战
-      SESSION_SECRET: 'e2e-test-secret',
-    },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -101,11 +104,21 @@ test('API 端到端冒烟（真实 server + 临时库）', { timeout: 480000 }, 
 
   await t.test('注册 ×3 + 登录态', async () => {
     for (const [nick, email] of [['艾丽丝', 'alice@test.dev'], ['鲍勃', 'bob@test.dev'], ['卡罗', 'carol@test.dev']]) {
-      const r = await api(B, 'POST', '/api/account/register', { body: { nickname: nick, email, password: 'password123' } });
-      assert.equal(r.status, 201, JSON.stringify(r.json));
-      assert.equal(r.json.emailVerified, true, '验证关闭时新账号应直接已验证');
-      assert.ok(r.cookie, '注册应下发会话 Cookie');
-      accts.push({ nick, cookie: r.cookie });
+      const sent = await api(B, 'POST', '/api/account/register', {
+        body: { registrationProtocol: 'email-code-v1', nickname: nick, email, password: 'password123' },
+      });
+      assert.equal(sent.status, 200, JSON.stringify(sent.json));
+      assert.equal(sent.cookie, null, '发码阶段不得下发会话 Cookie');
+      assert.match(sent.json.registrationId, /^[0-9a-f]{32}$/);
+      assert.match(sent.json.devCode, /^\d{6}$/);
+      assert.equal(Object.hasOwn(sent.json, 'accountId'), false, '发码阶段不得建号');
+      const verified = await api(B, 'POST', '/api/account/verify-code', {
+        body: { email, registrationId: sent.json.registrationId, code: sent.json.devCode },
+      });
+      assert.equal(verified.status, 201, JSON.stringify(verified.json));
+      assert.equal(verified.json.emailVerified, true);
+      assert.ok(verified.cookie, '核验建号后应下发会话 Cookie');
+      accts.push({ nick, cookie: verified.cookie });
     }
     const me = await api(B, 'GET', '/api/me', { cookie: accts[0].cookie });
     assert.equal(me.json.account.nickname, '艾丽丝');
@@ -160,6 +173,11 @@ test('API 端到端冒烟（真实 server + 临时库）', { timeout: 480000 }, 
   });
 
   await t.test('正式挑战 甲→乙：记账不变量 + 战报落库', async () => {
+    const inspect = new DatabaseSync(path.join(srv.dir, 'e2e.db'));
+    inspect.prepare("UPDATE accounts SET email_verified=0 WHERE nickname='艾丽丝'").run();
+    inspect.close();
+    const me = await api(B, 'GET', '/api/me', { cookie: bots[0].cookie });
+    assert.equal(me.json.emailVerified, false, '兼容字段仍反映历史值');
     const r = await api(B, 'POST', '/api/agent/challenge', { bearer: bots[0].key, body: { challengedBotId: bots[1].botId } });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.ok(['challenger', 'challenged', 'draw'].includes(r.json.battle.result));

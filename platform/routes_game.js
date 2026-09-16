@@ -3,7 +3,7 @@
 // 挂载该游戏的全套平台通用 API。每条路由同时注册两组路径：
 //   规范路径：/api/games/<id>/...、/api/games/<id>/agent/...、/games/<id>/agent-guide（新游戏只有这组）
 //   legacy 别名：web.aliases 里登记的旧路径（已发布给 Agent/前端的稳定契约，长期保留）
-// 平台负责统一的鉴权 / 频控 / 邮箱门槛 / 先测后存发布 / 结算调度骨架；
+// 平台负责统一的鉴权 / 频控 / 先测后存发布 / 结算调度骨架；
 // 游戏差异（响应包装键、战报视图、赛制执行）全部经 manifest / web 注入——新增游戏不改本文件。
 const { withLock } = require('./locks');
 const { makeJsonMicroCache } = require('./microcache');
@@ -220,16 +220,15 @@ function mountGameRoutes({ route, game, web, helpers }) {
     sendJson(res, 200, { ok: true, versions: store.listVersions(player.id) });
   });
 
-  // 正式挑战：平台骨架统一把守 鉴权 → 频控 → 邮箱门槛 → 目标/代码校验，
+  // 正式挑战：平台骨架统一把守 鉴权 → 频控 → 目标/代码校验，
   // 赛制执行 + 结算落库（内部走 platform/settle.js）由游戏适配的 challenge.execute 完成。
   reg('POST', 'challenge', `/api/games/${gid}/agent/challenge`, async (req, res, _m, body) => {
     const { player: challenger, error } = requireAgent(req);
     if (error) return sendJson(res, 401, { ok: false, error });
     if (rateLimited(res, rl.allow(`${gid}:challenge:` + challenger.id, 30, 60 * 1000))) return;
-    // 邮箱验证门槛（防多账号刷分）：未验证账号不能发起正式挑战
+    // 账号仍须存在；邮箱在正式建号前已经通过验证码核验。
     const chAccount = getAccountById(challenger.account_id);
-    if (!chAccount || !chAccount.email_verified)
-      return sendJson(res, 403, { ok: false, error: `请先验证账号邮箱后再发起正式挑战（站内「我的${game.noun}」可重新发送验证邮件）` });
+    if (!chAccount) return sendJson(res, 401, { ok: false, error: '账号不存在' });
     const challengedId = +body[web.challenge.bodyIdField];
     if (!challengedId || challengedId === challenger.id)
       return sendJson(res, 400, { ok: false, error: `不能挑战自己或无效 ${game.idField}` });

@@ -8,13 +8,27 @@
       <button class="icon-btn" data-close="authModal">✕</button>
     </div>
     <div id="authRegister">
-      <p class="modal-sub">第 1 步 · 注册后再创建你的选手。</p>
+      <p class="modal-sub">第 1 步 · 填写资料并获取邮箱验证码。</p>
       <div class="field"><label>昵称</label><input id="reg-nick" placeholder="你的公开昵称" /><div class="field-err" id="err-nick"></div></div>
       <div class="field"><label>邮箱</label><input id="reg-email" type="email" placeholder="you@example.com" /><div class="field-err" id="err-email"></div></div>
       <div class="field"><label>密码</label><input id="reg-pw" type="password" placeholder="至少 8 位" /></div>
       <div class="field"><label>确认密码</label><input id="reg-pw2" type="password" placeholder="再输入一次" /><div class="field-err" id="err-pw2"></div></div>
-      <button class="primary block" id="regBtn" disabled>注册</button>
+      <button class="primary block" id="regBtn" disabled>获取验证码</button>
+      <div class="field-err" id="registerWaitText" role="status"></div>
       <p class="modal-foot">已有账号？<a id="toLogin">去登录</a></p>
+    </div>
+    <div id="authVerify" class="hidden">
+      <p class="modal-sub">第 2 步 · 验证码已发送至 <strong id="verifyEmailMasked"></strong></p>
+      <div class="field">
+        <label>六位验证码</label>
+        <input id="reg-code" class="verification-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" />
+        <div class="field-err" id="err-code"></div>
+      </div>
+      <div class="verification-meta"><span id="codeExpiryText"></span><span id="resendWaitText"></span></div>
+      <button class="primary block" id="verifyCodeBtn" disabled>验证并注册</button>
+      <div class="field-err" id="verifyWaitText" role="status"></div>
+      <button class="block" id="resendCodeBtn" disabled>重新发送验证码</button>
+      <p class="modal-foot"><a id="changeRegEmail">更换邮箱</a> · <a id="verifyToLogin">去登录</a></p>
     </div>
     <div id="authLogin" class="hidden">
       <p class="modal-sub">欢迎回来。</p>

@@ -14,6 +14,14 @@ const RES_LABEL = { win: '胜', loss: '负', draw: '平' };
 const RES_CLS = { win: 'passed', loss: 'failed', draw: 'pending' };
 
 let ME = null; // { account, hasBot, bot } | null
+let pendingNav = null; // 仅由鉴权导航守卫写入；登录/注册成功后一次性消费
+let authEpoch = 0;     // 弹窗轮次；关闭或重开后丢弃旧请求的界面回调
+let registrationState = null;
+let registrationTimer = null;
+let verificationBusy = false;
+let authAction = null;
+let registrationRetryAt = 0;
+let verificationRetryAt = 0;
 
 // ============================================================
 // 段位
@@ -42,7 +50,10 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 2400);
 }
 function openModal(id) { $(id).classList.remove('hidden'); }
-function closeModal(id) { $(id).classList.add('hidden'); }
+function closeModal(id) {
+  $(id).classList.add('hidden');
+  if (id === 'authModal') cleanupAuthModal();
+}
 // 「点击即异步」按钮的统一进行中态：立即禁用（防重复提交）+ 显示 spinner，await 结束（成功/失败/异常）后恢复。
 // loadingText 非空 → 按钮内显示「⟳ 文案」；为空 → 覆盖式转圈（隐去原文字、保持原宽高不跳动）。
 // 返回 asyncFn 的结果；若按钮已在进行中（disabled）则直接忽略本次点击。
@@ -70,7 +81,7 @@ function bindModalChrome() {
   });
   document.querySelectorAll('.modal-mask').forEach((m) => {
     if (m.__bound) return; m.__bound = 1;
-    m.addEventListener('click', (e) => { if (e.target === m) m.classList.add('hidden'); });
+    m.addEventListener('click', (e) => { if (e.target === m) closeModal(m.id); });
   });
 }
 
@@ -468,7 +479,11 @@ function renderSideNav() {
 function dispatchNav(key) {
   const nav = (gamesMeta[PAGE.gid] || {}).nav || [];
   const item = nav.find((n) => n.key === key);
-  if (item && item.auth && !(ME && ME.account)) { openAuth('register'); return; }
+  if (item && item.auth && !(ME && ME.account)) {
+    pendingNav = { gid: PAGE.gid, key: item.key };
+    openAuth('register');
+    return;
+  }
   const p = Platform.current();
   p && p.showTab && p.showTab(key);
 }
@@ -502,6 +517,7 @@ function routeFromHash(initial) {
   const raw = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   let item = nav.find((n) => navHashOf(n) === raw || n.key === raw) || null;
   if (item && item.auth && !(ME && ME.account)) {
+    pendingNav = { gid: PAGE.gid, key: item.key };
     openAuth('register');
     item = null; // 守卫不过：落回当前/默认 tab，并把 hash 修正回去（不污染历史）
     const cur = nav.find((n) => n.key === activeNavKey);
@@ -668,102 +684,335 @@ function renderAuthState() {
 // ============================================================
 // 注册 / 登录 弹窗
 // ============================================================
-function openAuth(mode) {
-  $('authRegister').classList.toggle('hidden', mode !== 'register');
-  $('authLogin').classList.toggle('hidden', mode === 'register');
-  $('authTitle').textContent = mode === 'register' ? '注册账号' : '登录';
-  openModal('authModal');
+function clearRegistrationTimer() {
+  if (registrationTimer) clearInterval(registrationTimer);
+  registrationTimer = null;
 }
-$('toLogin').addEventListener('click', () => openAuth('login'));
-$('toRegister').addEventListener('click', () => openAuth('register'));
+function cleanupAuthModal() {
+  authEpoch++;
+  clearRegistrationTimer();
+  registrationState = null;
+  registrationRetryAt = verificationRetryAt = 0;
+  resetAuthAction();
+  pendingNav = null;
+  if ($('reg-pw')) $('reg-pw').value = '';
+  if ($('reg-pw2')) $('reg-pw2').value = '';
+  if ($('err-pw2')) { $('err-pw2').textContent = ''; $('err-pw2').classList.remove('ok'); }
+  if ($('reg-code')) $('reg-code').value = '';
+  if ($('login-pw')) $('login-pw').value = '';
+  if ($('err-code')) $('err-code').textContent = '';
+}
+function showAuthPanel(mode) {
+  const verify = mode === 'verify';
+  $('authRegister').classList.toggle('hidden', mode !== 'register');
+  $('authVerify').classList.toggle('hidden', !verify);
+  $('authLogin').classList.toggle('hidden', mode !== 'login');
+  $('authTitle').textContent = verify ? '验证邮箱' : mode === 'register' ? '注册账号' : '登录';
+}
+function openAuth(mode) {
+  // Switching panels also invalidates work from the previous panel. Navigation
+  // intent belongs to the open modal and survives this transition.
+  authEpoch++;
+  resetAuthAction();
+  $('reg-pw').value = $('reg-pw2').value = $('login-pw').value = '';
+  if (mode === 'register' && registrationState) mode = 'verify';
+  showAuthPanel(mode);
+  openModal('authModal');
+  updateAuthControls();
+}
+['toLogin', 'verifyToLogin', 'toRegister'].forEach((id) => $(id).addEventListener('click', () => {
+  if (!verificationBusy) openAuth(id === 'toRegister' ? 'register' : 'login');
+}));
 
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-function validateRegister() {
+const EMAIL_RE = /^[\x00-\x7f]{3,254}$/;
+function validateRegister(showFeedback = true) {
   const pw = $('reg-pw').value, pw2 = $('reg-pw2').value;
   const email = $('reg-email').value.trim();
   const errEmail = $('err-email');
-  const emailOk = EMAIL_RE.test(email);
-  if (email && !emailOk) { errEmail.textContent = '邮箱格式不正确'; errEmail.classList.remove('ok'); }
-  else { errEmail.textContent = ''; }
+  const parts = email.split('@');
+  const localOk = parts.length === 2 && parts[0].length <= 64
+    && /^[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~]+(?:\.[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~]+)*$/.test(parts[0]);
+  const labels = parts.length === 2 ? parts[1].split('.') : [];
+  const domainOk = labels.length >= 2 && labels.every((label) => label.length <= 63
+    && /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label));
+  const emailOk = EMAIL_RE.test(email) && localOk && domainOk;
+  if (showFeedback) {
+    if (email && !emailOk) { errEmail.textContent = '邮箱格式不正确'; errEmail.classList.remove('ok'); }
+    else { errEmail.textContent = ''; }
+  }
   const errEl = $('err-pw2');
-  if (pw2 && pw !== pw2) { errEl.textContent = '两次密码不一致'; errEl.classList.remove('ok'); }
-  else if (pw2 && pw === pw2) { errEl.textContent = '密码一致 ✓'; errEl.classList.add('ok'); }
-  else { errEl.textContent = ''; }
+  if (showFeedback) {
+    if (pw2 && pw !== pw2) { errEl.textContent = '两次密码不一致'; errEl.classList.remove('ok'); }
+    else if (pw2 && pw === pw2) { errEl.textContent = '密码一致 ✓'; errEl.classList.add('ok'); }
+    else { errEl.textContent = ''; }
+  }
   const ready = $('reg-nick').value.trim() && emailOk && pw.length >= 8 && pw.length <= 256 && pw === pw2;
-  $('regBtn').disabled = !ready;
+  $('regBtn').disabled = verificationBusy || Date.now() < registrationRetryAt || !ready;
 }
 ['reg-nick','reg-email','reg-pw','reg-pw2'].forEach((id) => $(id).addEventListener('input', () => { validateRegister(); if (id === 'reg-nick') $('err-nick').textContent = ''; }));
 
-$('regBtn').addEventListener('click', () => withBtnLoading($('regBtn'), async () => {
-  const body = { nickname: $('reg-nick').value.trim(), email: $('reg-email').value.trim(), password: $('reg-pw').value };
-  const r = await apiFetch('POST', '/api/account/register', body);
+$('regBtn').addEventListener('click', () => runVerificationAction($('regBtn'), '发送中…', async () => {
+  const epoch = authEpoch;
+  const email = $('reg-email').value.trim().toLowerCase();
+  const body = { registrationProtocol: 'email-code-v1', nickname: $('reg-nick').value.trim(), email, password: $('reg-pw').value };
+  let r;
+  try { r = await apiFetch('POST', '/api/account/register', body); }
+  catch { if (epoch === authEpoch) $('err-pw2').textContent = '网络异常，请稍后重试'; return; }
+  if (epoch !== authEpoch) return;
   if (r.ok) {
-    closeModal('authModal'); await refreshMe();
-    const cur = Platform.current(); cur && cur.showMine && cur.showMine(); // 进当前游戏的「我的」页
-    toast('注册成功，来创建你的选手吧');
-    // 提示验证邮箱（正式挑战前需完成）；演示环境直接给出验证链接
-    if (r.emailVerified === false) showVerifyLink(r.verifyUrl);
+    const at = Date.now();
+    registrationState = {
+      email, registrationId: r.registrationId,
+      expiresAt: at + r.expiresInSec * 1000,
+      resendAt: at + r.resendAfterSec * 1000,
+    };
+    $('reg-pw').value = '';
+    $('reg-pw2').value = '';
+    $('verifyEmailMasked').textContent = r.emailMasked;
+    $('reg-code').value = r.devCode || '';
+    $('err-code').textContent = '';
+    showAuthPanel('verify');
+    startRegistrationTimer();
+    focusAuthField('reg-code');
+    updateVerifyControls();
     return;
   }
-  if (r.field === 'nickname') { $('err-nick').textContent = r.error; return; }
-  if (r.field === 'email') {
-    popup({ icon: '✉', title: '该邮箱已注册', text: '你可以直接登录，或换一个邮箱注册新账号。', actions: [
-      { label: '去登录', primary: true, onClick: () => openAuth('login') },
-      { label: '换个邮箱', onClick: () => { openModal('authModal'); $('reg-email').focus(); } },
-    ] });
-    return;
+  if (r.reason === 'conflict') return handleRegistrationConflict(r);
+  if (r.retryAfterSec > 0) {
+    registrationRetryAt = Date.now() + r.retryAfterSec * 1000;
+    startRegistrationTimer();
   }
-  $('err-pw2').textContent = r.error || '注册失败'; $('err-pw2').classList.remove('ok');
-}, '注册中…'));
+  $('err-pw2').textContent = registrationError(r, '注册失败'); $('err-pw2').classList.remove('ok');
+}));
 
-$('loginBtn').addEventListener('click', () => withBtnLoading($('loginBtn'), async () => {
-  const body = { email: $('login-email').value.trim(), password: $('login-pw').value };
-  const r = await apiFetch('POST', '/api/auth/login', body);
-  if (r.ok) {
-    closeModal('authModal'); await refreshMe();
-    const cur = Platform.current(); cur && cur.showMine && cur.showMine();
-    toast('欢迎回来');
+function registrationError(response, fallback) {
+  if (response.reason === 'mail_unavailable') return '注册邮件服务暂不可用；已有账号仍可使用密码登录';
+  if (response.reason === 'registration_stale') return '注册信息已更新，请重新填写资料';
+  if (response.reason === 'mail_status_unknown') return '发送结果暂未确认，请等待后重试' + (registrationState ? '；旧验证码仍可继续使用' : '');
+  return response.error || fallback;
+}
+function handleRegistrationConflict(response) {
+  const email = registrationState ? registrationState.email : $('reg-email').value.trim().toLowerCase();
+  returnToRegistration(response.error);
+  if (response.field === 'nickname') {
+    $('err-nick').textContent = response.error || '昵称已被使用';
+    focusAuthField('reg-nick');
+  } else if (response.field === 'email') {
+    openAuth('login');
+    $('login-email').value = email;
+    $('err-login').textContent = '该邮箱已注册，请使用密码登录';
+    focusAuthField('login-pw');
+  }
+}
+
+function formatSeconds(seconds) {
+  const n = Math.max(0, seconds);
+  return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
+}
+function updateVerifyControls() {
+  if (!registrationState) {
+    $('verifyCodeBtn').disabled = $('resendCodeBtn').disabled = true;
     return;
   }
-  $('err-login').textContent = r.error || '登录失败';
-}, '登录中…'));
-
-// 演示环境：服务端直接回链接 → 弹窗给出可点击链接；生产环境走真实邮件
-function showVerifyLink(verifyUrl) {
-  if (verifyUrl) {
-    popup({ icon: '✉', title: '验证邮件已发送', text: '演示环境：点击下方链接完成验证。', actions: [
-      { label: '打开验证链接', primary: true, onClick: () => window.open(verifyUrl, '_blank') },
-      { label: '关闭' },
-    ] });
+  const now = Date.now();
+  const expires = Math.max(0, Math.ceil((registrationState.expiresAt - now) / 1000));
+  const resend = Math.max(0, Math.ceil((registrationState.resendAt - now) / 1000));
+  $('codeExpiryText').textContent = expires ? `验证码 ${formatSeconds(expires)} 后失效` : '验证码已过期';
+  $('resendWaitText').textContent = resend ? `${resend} 秒后可重发` : '可以重新发送';
+  $('verifyCodeBtn').disabled = verificationBusy || now < verificationRetryAt || expires === 0 || !/^[0-9]{6}$/.test($('reg-code').value);
+  $('resendCodeBtn').disabled = verificationBusy || expires === 0 || resend > 0;
+  $('changeRegEmail').classList.toggle('disabled', verificationBusy);
+}
+function startRegistrationTimer() {
+  clearRegistrationTimer();
+  updateAuthControls();
+  registrationTimer = setInterval(updateAuthControls, 500);
+}
+function returnToRegistration(message) {
+  clearRegistrationTimer();
+  registrationState = null;
+  registrationRetryAt = verificationRetryAt = 0;
+  $('reg-code').value = '';
+  $('reg-pw').value = '';
+  $('reg-pw2').value = '';
+  $('err-pw2').textContent = message || '';
+  $('err-pw2').classList.remove('ok');
+  showAuthPanel('register');
+  validateRegister(false);
+  focusAuthField('reg-pw');
+}
+async function finishAuthSuccess(epoch, message) {
+  const current = epoch === authEpoch && !$('authModal').classList.contains('hidden');
+  let intent = null;
+  if (current) {
+    intent = pendingNav;
+    pendingNav = null;
+    closeModal('authModal');
+  }
+  const completedEpoch = authEpoch;
+  try { await refreshMe(); }
+  catch {
+    if (current && completedEpoch === authEpoch) toast('登录已完成，状态刷新失败，请刷新页面');
+    return;
+  }
+  if (!current || completedEpoch !== authEpoch) return;
+  if (!(ME && ME.account)) { toast('尚未取得登录状态，请检查 Cookie 设置后使用密码登录'); return; }
+  toast(message);
+  if (!intent) return;
+  const meta = gamesMeta[intent.gid];
+  const item = meta && (meta.nav || []).find((entry) => entry.key === intent.key);
+  if (!item) return;
+  if (IS_GAME_PAGE && PAGE.gid === intent.gid) {
+    const currentGame = Platform.current();
+    if (currentGame && currentGame.showTab) currentGame.showTab(intent.key);
+    syncTabHash(intent.key);
   } else {
-    toast('验证邮件已发送，请查收邮箱');
+    location.href = `/g/${encodeURIComponent(intent.gid)}#${encodeURIComponent(navHashOf(item))}`;
   }
 }
+async function checkLostVerifyResponse(epoch) {
+  try { await refreshMe(); } catch { return false; }
+  if (ME && ME.account) {
+    await finishAuthSuccess(epoch, '注册成功，欢迎加入');
+    return true;
+  }
+  return false;
+}
+async function runVerificationAction(btn, label, fn) {
+  if (verificationBusy || btn.disabled || $('authModal').classList.contains('hidden')) return;
+  verificationBusy = true;
+  const action = { btn, html: btn.innerHTML, epoch: authEpoch, focusId: null };
+  authAction = action;
+  btn.innerHTML = `<span class="spinner"></span>${esc(label)}`;
+  updateAuthControls();
+  try { await fn(); }
+  finally { if (authAction === action) resetAuthAction(true); }
+}
+function focusAuthField(id) {
+  // A disabled input cannot receive focus. Keep the latest target on this
+  // action so only its valid completion can focus it after controls unlock.
+  if (authAction) authAction.focusId = id;
+  else $(id).focus();
+}
+function resetAuthAction(restoreFocus = false) {
+  const action = authAction;
+  if (action) action.btn.innerHTML = action.html;
+  authAction = null;
+  verificationBusy = false;
+  updateAuthControls();
+  if (restoreFocus && action && action.focusId && action.epoch === authEpoch && !$('authModal').classList.contains('hidden')) {
+    $(action.focusId).focus();
+  }
+}
+function updateAuthControls() {
+  ['reg-nick', 'reg-email', 'reg-pw', 'reg-pw2', 'reg-code', 'login-email', 'login-pw'].forEach((id) => { $(id).disabled = verificationBusy; });
+  ['toLogin', 'toRegister', 'verifyToLogin', 'changeRegEmail'].forEach((id) => {
+    $(id).classList.toggle('disabled', verificationBusy);
+    $(id).setAttribute('aria-disabled', String(verificationBusy));
+  });
+  $('loginBtn').disabled = verificationBusy;
+  const retry = Math.max(0, Math.ceil((registrationRetryAt - Date.now()) / 1000));
+  $('registerWaitText').textContent = retry ? `${retry} 秒后可重新获取验证码` : '';
+  const verifyRetry = Math.max(0, Math.ceil((verificationRetryAt - Date.now()) / 1000));
+  $('verifyWaitText').textContent = verifyRetry ? `${verifyRetry} 秒后可重新验证` : '';
+  validateRegister(false);
+  updateVerifyControls();
+}
 
-// ============================================================
-// 邮箱验证横幅（平台通用组件）
-// 各游戏「我的」页把 verifyBannerHtml() 拼进自己的 innerHTML 开头，随后调
-// bindVerifyBanner(root, refresh) 绑定重发按钮：root = 刚写入的容器（按容器查找，
-// 不用全局 id——多个游戏面板可能同时各有一条横幅）；refresh = 该游戏「我的」页的
-// 重渲染函数（点重发时若发现邮箱其实已验证，刷新登录态后重画本游戏面板）。
-// ============================================================
-function verifyBannerHtml() {
-  if (!(ME && ME.account) || ME.emailVerified !== false) return '';
-  return `<div class="warn-box verify-banner" style="margin-bottom:14px">
-    ⚠ 邮箱未验证：发起<b>正式挑战</b>需先验证邮箱（${esc(ME.account.email)}）。
-    <button class="mini" data-resend-verify style="margin-left:8px">重新发送验证邮件</button>
-  </div>`;
-}
-function bindVerifyBanner(root, refresh) {
-  const btn = root.querySelector('[data-resend-verify]');
-  if (!btn) return;
-  btn.addEventListener('click', () => withBtnLoading(btn, async () => {
-    const r = await apiFetch('POST', '/api/account/resend-verification');
-    if (!r.ok) return toast(r.error || '发送失败');
-    if (r.emailVerified) { toast('邮箱已验证'); await refreshMe(); refresh && refresh(); return; }
-    showVerifyLink(r.verifyUrl);
-  }, '发送中…'));
-}
+$('reg-code').addEventListener('input', () => {
+  $('reg-code').value = $('reg-code').value.replace(/\D/g, '').slice(0, 6);
+  $('err-code').textContent = '';
+  updateVerifyControls();
+});
+$('reg-code').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !$('verifyCodeBtn').disabled) $('verifyCodeBtn').click();
+});
+$('changeRegEmail').addEventListener('click', () => {
+  if (!verificationBusy) returnToRegistration('请重新输入密码后获取验证码');
+});
+
+$('verifyCodeBtn').addEventListener('click', () => runVerificationAction($('verifyCodeBtn'), '验证中…', async () => {
+  if (!registrationState) return;
+  const epoch = authEpoch;
+  let r;
+  try {
+    r = await apiFetch('POST', '/api/account/verify-code', {
+      email: registrationState.email,
+      registrationId: registrationState.registrationId,
+      code: $('reg-code').value,
+    });
+  } catch {
+    if (await checkLostVerifyResponse(epoch)) return;
+    if (epoch === authEpoch) $('err-code').textContent = '网络异常，请重试或使用密码登录';
+    return;
+  }
+  if (r.ok) return finishAuthSuccess(epoch, '注册成功，欢迎加入');
+  if (epoch !== authEpoch) return;
+  if (r.reason === 'pending_missing') {
+    if (await checkLostVerifyResponse(epoch)) return;
+    if (epoch !== authEpoch) return;
+    returnToRegistration((r.error || '注册信息已失效') + '；若已完成验证，请使用密码登录');
+    return;
+  }
+  if (['expired', 'exhausted', 'registration_stale'].includes(r.reason)) {
+    returnToRegistration(registrationError(r, '注册信息已失效，请重新填写资料'));
+    return;
+  }
+  if (r.reason === 'conflict') return handleRegistrationConflict(r);
+  if (r.retryAfterSec > 0) verificationRetryAt = Date.now() + r.retryAfterSec * 1000;
+  $('err-code').textContent = r.reason === 'code_incorrect'
+    ? `${r.error}，还可尝试 ${r.remaining} 次`
+    : (r.error || '验证失败');
+}));
+
+$('resendCodeBtn').addEventListener('click', () => runVerificationAction($('resendCodeBtn'), '发送中…', async () => {
+  if (!registrationState) return;
+  const epoch = authEpoch;
+  let r;
+  try {
+    r = await apiFetch('POST', '/api/account/resend-code', {
+      email: registrationState.email,
+      registrationId: registrationState.registrationId,
+    });
+  } catch { if (epoch === authEpoch) $('err-code').textContent = '网络异常，可尝试旧验证码；若已失效请重新填写资料'; return; }
+  if (epoch !== authEpoch) return;
+  if (r.ok) {
+    const at = Date.now();
+    registrationState.registrationId = r.registrationId;
+    registrationState.expiresAt = at + r.expiresInSec * 1000;
+    registrationState.resendAt = at + r.resendAfterSec * 1000;
+    $('verifyEmailMasked').textContent = r.emailMasked;
+    $('reg-code').value = r.devCode || '';
+    $('err-code').textContent = '新的验证码已发送';
+    startRegistrationTimer();
+    return;
+  }
+  if (r.retryAfterSec) {
+    registrationState.resendAt = Date.now() + r.retryAfterSec * 1000;
+  }
+  if (r.reason === 'pending_missing') {
+    if (await checkLostVerifyResponse(epoch)) return;
+    if (epoch !== authEpoch) return;
+    returnToRegistration((r.error || '注册信息已失效') + '；若已完成验证，请使用密码登录');
+    return;
+  }
+  if (['expired', 'exhausted', 'registration_stale'].includes(r.reason)) return returnToRegistration(registrationError(r, '注册信息已失效，请重新填写资料'));
+  if (r.reason === 'conflict') return handleRegistrationConflict(r);
+  $('err-code').textContent = registrationError(r, '发送失败，旧验证码仍可继续使用');
+}));
+
+$('loginBtn').addEventListener('click', () => runVerificationAction($('loginBtn'), '登录中…', async () => {
+  const epoch = authEpoch;
+  const body = { email: $('login-email').value.trim(), password: $('login-pw').value };
+  let r;
+  try { r = await apiFetch('POST', '/api/auth/login', body); }
+  catch { if (epoch === authEpoch) $('err-login').textContent = '网络异常，请稍后重试'; return; }
+  if (r.ok) {
+    return finishAuthSuccess(epoch, '欢迎回来');
+  }
+  if (epoch !== authEpoch) return;
+  $('err-login').textContent = r.error || '登录失败';
+}));
 
 // ============================================================
 // 创建选手 / 更换头像（平台通用组件）

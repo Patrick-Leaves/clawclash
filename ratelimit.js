@@ -17,6 +17,28 @@ function allow(key, max, windowMs) {
   return { ok: true };
 }
 
+// 多桶原子检查：全部桶均可放行时才一起记入，避免前一桶已扣数而后一桶拒绝。
+// entries: [{ key, max, windowMs }]
+function allowAll(entries) {
+  const at = Date.now();
+  const checked = [];
+  for (const { key, max, windowMs } of entries) {
+    let arr = buckets.get(key);
+    if (!arr) arr = [];
+    else while (arr.length && arr[0] <= at - windowMs) arr.shift();
+    if (arr.length >= max) {
+      const retryMs = arr[0] + windowMs - at;
+      return { ok: false, retryAfterSec: Math.max(1, Math.ceil(retryMs / 1000)) };
+    }
+    checked.push({ key, arr });
+  }
+  for (const { key, arr } of checked) {
+    if (!buckets.has(key)) buckets.set(key, arr);
+    arr.push(at);
+  }
+  return { ok: true };
+}
+
 // 定期清理空桶，防止 Map 无限增长（不阻止进程退出）
 const timer = setInterval(() => {
   const cutoff = Date.now() - 3600000;
@@ -27,4 +49,4 @@ const timer = setInterval(() => {
 }, 600000);
 if (timer.unref) timer.unref();
 
-module.exports = { allow };
+module.exports = { allow, allowAll };

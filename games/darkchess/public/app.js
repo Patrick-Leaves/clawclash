@@ -3,7 +3,7 @@
 // 面板标记在同目录 panel.html，由服务器内联进游戏页 /g/darkchess 后再加载本文件。
 // 整个文件包在 IIFE 内：所有声明均为本游戏私有，跨游戏零命名碰撞；对外只经
 // Platform.registerGame 暴露插件对象。壳工具（$ / apiFetch / esc / toast / avatarHtml /
-// openModal / popup / copyText / ME / RES_LABEL / verifyBannerHtml 等）是壳脚本的
+// openModal / popup / copyText / ME / RES_LABEL 等）是壳脚本的
 // 全局词法绑定，闭包内直接可用。
 // DOM 命名空间：document 级查询属性仍须加 dq 前缀（data-dqtab / .dqtab-panel /
 // data-dqplaymode）——IIFE 只隔离 JS 命名，DOM 是全站共享的，选择器照旧要防误伤。
@@ -92,22 +92,20 @@ const DQ_PLAYER_CFG = {
 function openCreateDarkchess() { openCreatePlayer(DQ_PLAYER_CFG); }
 function openDarkchessAvatarEditor(currentAvatar) { openAvatarEditorShared(DQ_PLAYER_CFG, currentAvatar); }
 
-// 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
 async function renderMyDarkchess() {
   const box = $('dqMybotBody');
   if (!(ME && ME.account)) { box.innerHTML = '<div class="empty-hero"><h2>请先登录</h2><p>登录后即可创建并管理你的棋手。</p></div>'; return; }
   box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/games/darkchess/me');
   if (r.__status === 404) {
-    box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="dqCreateOpen">创建棋手 →</button></div>`;
-    bindVerifyBanner(box, renderMyDarkchess);
+    box.innerHTML = `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="dqCreateOpen">创建棋手 →</button></div>`;
     $('dqCreateOpen').addEventListener('click', openCreateDarkchess);
     return;
   }
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const b = r.darkchess;
   const empty = b.status === 'empty';
-  box.innerHTML = verifyBannerHtml() + `
+  box.innerHTML = `
     <div class="bot-card">
       <div class="av">${avatarHtml(b.avatar)}</div>
       <div class="grow">
@@ -117,7 +115,6 @@ async function renderMyDarkchess() {
       </div>
       <div class="actions"><button class="primary" id="dqGoDetail">详情</button></div>
     </div>`;
-  bindVerifyBanner(box, renderMyDarkchess);
   $('dqGoDetail').addEventListener('click', () => showDqDetail());
 }
 

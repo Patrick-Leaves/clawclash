@@ -115,7 +115,7 @@ function buildLegacyDb(file) {
   ins('INSERT INTO accounts(id,nickname,email,password_hash,email_verified,created_at) VALUES(?,?,?,?,?,?)',
     1, '阿甲', 'jia@mig.dev', auth.hashPassword('password123'), 1, t);
   ins('INSERT INTO accounts(id,nickname,email,password_hash,email_verified,created_at) VALUES(?,?,?,?,?,?)',
-    2, '阿乙', 'yi@mig.dev', auth.hashPassword('password123'), 1, t);
+    2, '阿乙', 'yi@mig.dev', auth.hashPassword('password123'), 0, t);
   // 钳王棋手：老甲(rp275, ELO1234, 10胜2负1平, v2 在用)、老乙(rp40)
   ins('INSERT INTO bots(id,account_id,name,avatar,current_version,rating,rp,wins,losses,draws,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
     1, 1, '老甲', 'preset:3', 2, 1234, 275, 10, 2, 1, t);
@@ -166,8 +166,12 @@ function buildLegacyDb(file) {
 // ---- server 生命周期 / HTTP 帮手（与 api.e2e 同款）----
 async function startServer(dbFile) {
   const port = 3900 + Math.floor(Math.random() * 400);
+  const env = { ...process.env };
+  for (const key of ['SMTP_HOST', 'SMTP_SECURE', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
+    'SMTP_DAILY_MAX', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'EMAIL_VERIFICATION']) delete env[key];
+  Object.assign(env, { PORT: String(port), DB_PATH: dbFile, NODE_ENV: 'test', SESSION_SECRET: 'mig-test-secret' });
   const child = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
-    env: { ...process.env, PORT: String(port), DB_PATH: dbFile, NODE_ENV: 'test', EMAIL_VERIFICATION: '', SESSION_SECRET: 'mig-test-secret' },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -205,6 +209,13 @@ test('P3 迁移：旧双表族库 → 统一表族，数据经 API 全量验证'
 
   await t.test('启动即迁移（旧表留底 legacy_*）', () => {
     assert.ok(srv.getLogs().includes('[P3 迁移] 完成'), srv.getLogs());
+    const inspect = new DatabaseSync(dbFile);
+    try {
+      assert.equal(inspect.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE name='email_code_registration_v1_1'").get().n, 1);
+      assert.equal(inspect.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('pending_registrations','registration_mail_attempts')").get().n, 2);
+      assert.equal(inspect.prepare('SELECT email_verified FROM accounts WHERE id=2').get().email_verified, 1,
+        '首次 v1.1 迁移应放行历史未验证账号');
+    } finally { inspect.close(); }
   });
 
   let cookieA;
@@ -293,9 +304,17 @@ test('P3 迁移：旧双表族库 → 统一表族，数据经 API 全量验证'
   });
 
   await t.test('二次启动幂等：不重复迁移，数据保持', async () => {
+    const inspect = new DatabaseSync(dbFile);
+    inspect.prepare('UPDATE accounts SET email_verified=0 WHERE id=2').run();
+    inspect.close();
     await srv.stop();
     srv = await startServer(dbFile);
     assert.ok(!srv.getLogs().includes('[P3 迁移]'), '二次启动不得再触发迁移：\n' + srv.getLogs());
+    const afterRestart = new DatabaseSync(dbFile);
+    try {
+      assert.equal(afterRestart.prepare('SELECT email_verified FROM accounts WHERE id=2').get().email_verified, 0,
+        '迁移标记存在时不得重复批量修改历史账号');
+    } finally { afterRestart.close(); }
     const pub = (await api(srv.base, 'GET', '/api/bots/1/public')).json.bot;
     assert.equal(pub.rp, 275);
     const p1 = (await api(srv.base, 'GET', '/api/prisoners/1/public')).json.prisoner;

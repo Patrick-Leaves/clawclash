@@ -14,6 +14,9 @@ const crypto = require('crypto');
 
 // 库文件路径可用 DB_PATH 覆盖（测试打临时库用）；生产/开发默认不变。
 const db = new DatabaseSync(process.env.DB_PATH || path.join(__dirname, 'sixchess.db'));
+// SQLite lower()/trim() only cover ASCII casing/spaces. Historical identities
+// must use exactly the same canonical key as registration and collision checks.
+db.function('canonical_email', { deterministic: true }, (email) => email.trim().toLowerCase());
 
 db.exec(`
 PRAGMA journal_mode=WAL;
@@ -232,8 +235,72 @@ else createUnifiedSchema();
 const acctCols = db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name);
 if (!acctCols.includes('email_verified')) {
   db.exec('ALTER TABLE accounts ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0');
-  db.exec('UPDATE accounts SET email_verified=1');
 }
+
+// ---- 邮箱验证码注册 v1.1：一次性迁移与持久状态 ----
+const EMAIL_REGISTRATION_MIGRATION = 'email_code_registration_v1_1';
+function migrateEmailCodeRegistration() {
+  const canonicalOwners = new Map();
+  for (const account of db.prepare('SELECT id,email FROM accounts').all()) {
+    const canonical = String(account.email).trim().toLowerCase();
+    const existing = canonicalOwners.get(canonical);
+    if (existing !== undefined && existing !== account.id) {
+      throw new Error(`邮箱规范化后冲突，账号 ${existing} 与 ${account.id} 需要人工处理`);
+    }
+    canonicalOwners.set(canonical, account.id);
+  }
+
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  name       TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pending_registrations (
+  email             TEXT PRIMARY KEY,
+  registration_id   TEXT NOT NULL UNIQUE,
+  nickname          TEXT NOT NULL,
+  password_hash     TEXT NOT NULL,
+  code_hash         TEXT NOT NULL,
+  attempts          INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 4),
+  created_at        INTEGER NOT NULL,
+  issued_at         INTEGER NOT NULL,
+  expires_at        INTEGER NOT NULL,
+  flow_expires_at   INTEGER NOT NULL,
+  CHECK(expires_at <= flow_expires_at)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_expiry ON pending_registrations(expires_at);
+CREATE TABLE IF NOT EXISTS registration_mail_attempts (
+  id                TEXT PRIMARY KEY,
+  email             TEXT NOT NULL,
+  source_ip         TEXT NOT NULL,
+  state             TEXT NOT NULL CHECK(state IN ('reserved','sent','failed','unknown')),
+  reserved_at       INTEGER NOT NULL,
+  lease_expires_at  INTEGER NOT NULL,
+  accepted_at       INTEGER,
+  quota_day         TEXT,
+  finished_at       INTEGER,
+  CHECK(state <> 'sent' OR (accepted_at IS NOT NULL AND quota_day IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_regmail_day ON registration_mail_attempts(state, quota_day);
+CREATE INDEX IF NOT EXISTS idx_regmail_email ON registration_mail_attempts(email, state, accepted_at);
+CREATE INDEX IF NOT EXISTS idx_regmail_ip ON registration_mail_attempts(source_ip, state, quota_day);
+CREATE INDEX IF NOT EXISTS idx_regmail_lease ON registration_mail_attempts(state, lease_expires_at);
+`);
+    const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE name=?').get(EMAIL_REGISTRATION_MIGRATION);
+    if (!applied) {
+      db.exec('UPDATE accounts SET email_verified=1 WHERE email_verified=0');
+      db.prepare('INSERT INTO schema_migrations(name,applied_at) VALUES(?,?)')
+        .run(EMAIL_REGISTRATION_MIGRATION, Date.now());
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+migrateEmailCodeRegistration();
 
 // ---- 工具函数 ----
 function hashKey(key) { return crypto.createHash('sha256').update(key).digest('hex'); }
@@ -243,12 +310,231 @@ function urlId() { return crypto.randomBytes(8).toString('hex'); }
 function now() { return Date.now(); }
 
 // ---- 账号 ----
-const stmtInsertAccount = db.prepare('INSERT INTO accounts(nickname,email,password_hash,created_at) VALUES(?,?,?,?)');
-const stmtGetAccountByEmail = db.prepare('SELECT * FROM accounts WHERE email=?');
+const stmtInsertAccount = db.prepare('INSERT INTO accounts(nickname,email,password_hash,email_verified,created_at) VALUES(?,?,?,1,?)');
+const stmtGetAccountByEmail = db.prepare('SELECT * FROM accounts WHERE canonical_email(email)=?');
 const stmtGetAccountByNickname = db.prepare('SELECT * FROM accounts WHERE nickname=?');
 const stmtGetAccountById = db.prepare('SELECT * FROM accounts WHERE id=?');
-const stmtSetEmailVerified = db.prepare('UPDATE accounts SET email_verified=1 WHERE id=?');
-const stmtVerifyAllAccounts = db.prepare('UPDATE accounts SET email_verified=1 WHERE email_verified=0');
+
+// ---- 邮箱验证码注册数据操作（全部同步短事务；不得在事务中等待网络或 scrypt）----
+const stmtGetPendingRegistration = db.prepare('SELECT * FROM pending_registrations WHERE email=?');
+const stmtDeletePendingRegistration = db.prepare('DELETE FROM pending_registrations WHERE email=? AND registration_id=?');
+const stmtLatestAcceptedMail = db.prepare(`SELECT MAX(accepted_at) AS accepted_at
+  FROM registration_mail_attempts WHERE email=? AND state='sent'`);
+const stmtInsertMailReservation = db.prepare(`INSERT INTO registration_mail_attempts
+  (id,email,source_ip,state,reserved_at,lease_expires_at) VALUES(?,?,?,'reserved',?,?)`);
+const stmtFinishMailAttempt = db.prepare(`UPDATE registration_mail_attempts
+  SET state=?, finished_at=? WHERE id=? AND state='reserved'`);
+const stmtAcceptMailAttempt = db.prepare(`UPDATE registration_mail_attempts
+  SET state='sent', accepted_at=?, quota_day=?, finished_at=? WHERE id=? AND state='reserved'`);
+const stmtUpsertPendingRegistration = db.prepare(`INSERT INTO pending_registrations
+  (email,registration_id,nickname,password_hash,code_hash,attempts,created_at,issued_at,expires_at,flow_expires_at)
+  VALUES(?,?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(email) DO UPDATE SET
+    registration_id=excluded.registration_id,nickname=excluded.nickname,password_hash=excluded.password_hash,
+    code_hash=excluded.code_hash,attempts=excluded.attempts,created_at=excluded.created_at,
+    issued_at=excluded.issued_at,expires_at=excluded.expires_at,flow_expires_at=excluded.flow_expires_at`);
+
+function beginImmediate() { db.exec('BEGIN IMMEDIATE'); }
+function rollbackQuietly() { try { db.exec('ROLLBACK'); } catch {} }
+
+function getPendingRegistration(email) {
+  return stmtGetPendingRegistration.get(email);
+}
+
+function deletePendingRegistration(email, registrationId) {
+  return stmtDeletePendingRegistration.run(email, registrationId).changes > 0;
+}
+
+function cleanupRegistrationData(at, lockedEmails = []) {
+  beginImmediate();
+  try {
+    let pendingSql = 'DELETE FROM pending_registrations WHERE (expires_at<=? OR flow_expires_at<=?)';
+    const pendingArgs = [at, at];
+    if (lockedEmails.length) {
+      pendingSql += ` AND email NOT IN (${lockedEmails.map(() => '?').join(',')})`;
+      pendingArgs.push(...lockedEmails);
+    }
+    const pendingDeleted = db.prepare(pendingSql).run(...pendingArgs).changes;
+    const leasesReleased = db.prepare(`UPDATE registration_mail_attempts
+      SET state='failed', finished_at=COALESCE(finished_at,?)
+      WHERE state IN ('reserved','unknown') AND lease_expires_at<=?`).run(at, at).changes;
+    const cutoff = at - 48 * 60 * 60 * 1000;
+    const attemptsDeleted = db.prepare(`DELETE FROM registration_mail_attempts WHERE
+      (state='sent' AND accepted_at<=?) OR
+      (state IN ('failed','unknown') AND finished_at IS NOT NULL AND finished_at<=?)`)
+      .run(cutoff, cutoff).changes;
+    db.exec('COMMIT');
+    return { pendingDeleted, leasesReleased, attemptsDeleted };
+  } catch (error) {
+    rollbackQuietly();
+    throw error;
+  }
+}
+
+function reserveRegistrationMail({ id, email, sourceIp, reservedAt, leaseExpiresAt, quotaDay,
+  emailLimit = 3, ipLimit = 10, globalLimit = 200, retryAfterSec }) {
+  beginImmediate();
+  try {
+    db.prepare(`UPDATE registration_mail_attempts SET state='failed',finished_at=COALESCE(finished_at,?)
+      WHERE state IN ('reserved','unknown') AND lease_expires_at<=?`).run(reservedAt, reservedAt);
+    const sent = (where, ...args) => db.prepare(`SELECT COUNT(*) AS n FROM registration_mail_attempts
+      WHERE state='sent' AND quota_day=? AND ${where}`).get(quotaDay, ...args).n;
+    const active = (where, ...args) => db.prepare(`SELECT COUNT(*) AS n FROM registration_mail_attempts
+      WHERE state IN ('reserved','unknown') AND lease_expires_at>? AND ${where}`).get(reservedAt, ...args).n;
+    const sentEmail = sent('email=?', email);
+    const sentIp = sent('source_ip=?', sourceIp);
+    const sentGlobal = globalLimit === 0 ? 0 : sent('1=1');
+    let failure;
+    if (sentEmail >= emailLimit) failure = { reason: 'email_quota', retryAfterSec };
+    else if (sentIp >= ipLimit) failure = { reason: 'ip_quota', retryAfterSec };
+    else if (globalLimit !== 0 && sentGlobal >= globalLimit) failure = { reason: 'global_quota', retryAfterSec };
+    else {
+      const sameEmail = db.prepare(`SELECT state,lease_expires_at FROM registration_mail_attempts
+        WHERE email=? AND state IN ('reserved','unknown') AND lease_expires_at>?
+        ORDER BY lease_expires_at DESC LIMIT 1`).get(email, reservedAt);
+      if (sameEmail) {
+        failure = { reason: 'send_recovering', retryAfterSec: Math.max(1, Math.ceil((sameEmail.lease_expires_at - reservedAt) / 1000)) };
+      } else if (sentEmail + active('email=?', email) >= emailLimit
+        || sentIp + active('source_ip=?', sourceIp) >= ipLimit
+        || (globalLimit !== 0 && sentGlobal + active('1=1') >= globalLimit)) {
+        failure = { reason: 'send_reserved', retryAfterSec: 2 };
+      }
+    }
+    if (failure) {
+      db.exec('COMMIT');
+      return { ok: false, ...failure };
+    }
+    stmtInsertMailReservation.run(id, email, sourceIp, reservedAt, leaseExpiresAt);
+    db.exec('COMMIT');
+    return { ok: true };
+  } catch (error) {
+    rollbackQuietly();
+    throw error;
+  }
+}
+
+function finishRegistrationMail(id, state, at) {
+  if (state !== 'failed' && state !== 'unknown') throw new Error('invalid mail terminal state');
+  return { updated: stmtFinishMailAttempt.run(state, at, id).changes > 0 };
+}
+
+function pendingValues(pending) {
+  return [pending.email, pending.registration_id, pending.nickname, pending.password_hash,
+    pending.code_hash, pending.attempts, pending.created_at, pending.issued_at,
+    pending.expires_at, pending.flow_expires_at];
+}
+
+function commitRegistrationMail({ id, email, acceptedAt, quotaDay, pending, expectedRegistrationId, now: at }) {
+  beginImmediate();
+  try {
+    const accepted = stmtAcceptMailAttempt.run(acceptedAt, quotaDay, acceptedAt, id);
+    if (!accepted.changes) throw new Error('mail reservation is no longer active');
+    let outcome = { ok: true };
+    const current = stmtGetPendingRegistration.get(email);
+    const nicknameOwner = stmtGetAccountByNickname.get(pending.nickname);
+    const emailOwner = stmtGetAccountByEmail.get(email);
+    if (nicknameOwner) outcome = { ok: false, reason: 'conflict', field: 'nickname' };
+    else if (emailOwner) outcome = { ok: false, reason: 'conflict', field: 'email' };
+    else if (at >= pending.expires_at || at >= pending.flow_expires_at
+      || (expectedRegistrationId !== undefined && current
+        && current.registration_id === expectedRegistrationId
+        && (at >= current.expires_at || at >= current.flow_expires_at))) {
+      if (current && (!expectedRegistrationId || current.registration_id === expectedRegistrationId)
+        && (at >= current.expires_at || at >= current.flow_expires_at)) {
+        stmtDeletePendingRegistration.run(email, current.registration_id);
+      }
+      outcome = { ok: false, reason: 'expired' };
+    } else if (expectedRegistrationId !== undefined
+      && (!current || current.registration_id !== expectedRegistrationId)) {
+      outcome = { ok: false, reason: 'registration_stale' };
+    } else {
+      stmtUpsertPendingRegistration.run(...pendingValues(pending));
+      outcome.pending = stmtGetPendingRegistration.get(email);
+    }
+    db.exec('COMMIT');
+    return outcome;
+  } catch (error) {
+    rollbackQuietly();
+    throw error;
+  }
+}
+
+function recordIncorrectRegistrationCode({ email, registrationId, now: at }) {
+  beginImmediate();
+  try {
+    const row = stmtGetPendingRegistration.get(email);
+    let outcome;
+    if (!row) outcome = { reason: 'missing' };
+    else if (row.registration_id !== registrationId) outcome = { reason: 'stale' };
+    else if (at >= row.expires_at || at >= row.flow_expires_at) {
+      stmtDeletePendingRegistration.run(email, registrationId);
+      outcome = { reason: 'expired' };
+    } else if (row.attempts >= 4) {
+      stmtDeletePendingRegistration.run(email, registrationId);
+      outcome = { reason: 'exhausted', remaining: 0 };
+    } else {
+      const attempts = row.attempts + 1;
+      db.prepare('UPDATE pending_registrations SET attempts=? WHERE email=? AND registration_id=?')
+        .run(attempts, email, registrationId);
+      outcome = { reason: 'incorrect', remaining: 5 - attempts };
+    }
+    db.exec('COMMIT');
+    return outcome;
+  } catch (error) {
+    rollbackQuietly();
+    throw error;
+  }
+}
+
+function consumePendingRegistration({ email, registrationId, now: at }) {
+  beginImmediate();
+  try {
+    const row = stmtGetPendingRegistration.get(email);
+    let outcome;
+    if (!row) outcome = { ok: false, reason: 'missing' };
+    else if (row.registration_id !== registrationId) outcome = { ok: false, reason: 'stale' };
+    else if (at >= row.expires_at || at >= row.flow_expires_at) {
+      stmtDeletePendingRegistration.run(email, registrationId);
+      outcome = { ok: false, reason: 'expired' };
+    } else {
+      const nicknameOwner = stmtGetAccountByNickname.get(row.nickname);
+      const emailOwner = stmtGetAccountByEmail.get(email);
+      if (nicknameOwner || emailOwner) {
+        stmtDeletePendingRegistration.run(email, registrationId);
+        outcome = { ok: false, reason: 'conflict', field: nicknameOwner ? 'nickname' : 'email' };
+      } else {
+        stmtInsertAccount.run(row.nickname, email, row.password_hash, at);
+        if (!stmtDeletePendingRegistration.run(email, registrationId).changes) throw new Error('pending registration was not consumed');
+        outcome = { ok: true, account: stmtGetAccountByEmail.get(email) };
+      }
+    }
+    db.exec('COMMIT');
+    return outcome;
+  } catch (error) {
+    rollbackQuietly();
+    throw error;
+  }
+}
+
+function getRegistrationCooldown(email) {
+  const row = stmtLatestAcceptedMail.get(email);
+  return row && row.accepted_at != null ? row.accepted_at : null;
+}
+
+function recoverRegistrationMailLeases(at) {
+  beginImmediate();
+  try {
+    const recovered = db.prepare(`UPDATE registration_mail_attempts SET state='unknown',finished_at=?
+      WHERE state='reserved' AND lease_expires_at>?`).run(at, at).changes;
+    const released = db.prepare(`UPDATE registration_mail_attempts SET state='failed',finished_at=?
+      WHERE state IN ('reserved','unknown') AND lease_expires_at<=?`).run(at, at).changes;
+    db.exec('COMMIT');
+    return { recovered, released };
+  } catch (error) {
+    rollbackQuietly();
+    throw error;
+  }
+}
 
 // ============================================================
 // gameStore(gameId, opts)：某游戏的全套数据访问（P2 store 接口的统一实现）。
@@ -402,9 +688,16 @@ module.exports = {
   getAccountByEmail: (email) => stmtGetAccountByEmail.get(email),
   getAccountByNickname: (nickname) => stmtGetAccountByNickname.get(nickname),
   getAccountById: (id) => stmtGetAccountById.get(id),
-  setEmailVerified: (accountId) => stmtSetEmailVerified.run(accountId),
-  // 一次性把所有未验证账号置为已验证（邮箱验证关闭时用）；返回受影响行数。
-  markAllAccountsVerified: () => stmtVerifyAllAccounts.run().changes,
+  getPendingRegistration,
+  deletePendingRegistration,
+  cleanupRegistrationData,
+  reserveRegistrationMail,
+  finishRegistrationMail,
+  commitRegistrationMail,
+  recordIncorrectRegistrationCode,
+  consumePendingRegistration,
+  getRegistrationCooldown,
+  recoverRegistrationMailLeases,
 
   // 按游戏的数据访问工厂
   gameStore,

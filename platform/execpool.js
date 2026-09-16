@@ -147,4 +147,4 @@ function run(gameId, kind, payload, ownerKey) {
   });
 }
 
-module.exports = { run };
+module.exports = { run, _internals: { childEnv } };

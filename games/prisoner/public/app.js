@@ -3,7 +3,7 @@
 // 面板标记在同目录 panel.html，由服务器内联进游戏页 /g/prisoner 后再加载本文件。
 // 整个文件包在 IIFE 内：所有声明均为本游戏私有，跨游戏零命名碰撞；对外只经
 // Platform.registerGame 暴露插件对象。壳工具（$ / apiFetch / esc / toast / rankLabel /
-// avatarHtml / openModal / closeModal / popup / ME / RES_LABEL / verifyBannerHtml 等）
+// avatarHtml / openModal / closeModal / popup / ME / RES_LABEL 等）
 // 是壳脚本的全局词法绑定，闭包内直接可用。
 (() => {
 
@@ -67,17 +67,15 @@ async function renderMyPrisoner() {
   }
   const r = await apiFetch('GET', '/api/prisoner/me');
   if (r.__status === 404) {
-    // 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）
-    box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有囚徒</h2><p>创建一名囚徒，选一个头像；策略脚本由你/Agent 稍后提交。</p>
+    box.innerHTML = `<div class="empty-hero"><h2>你还没有囚徒</h2><p>创建一名囚徒，选一个头像；策略脚本由你/Agent 稍后提交。</p>
       <button class="primary" id="pdCreateOpen">创建囚徒 →</button></div>`;
-    bindVerifyBanner(box, renderMyPrisoner);
     $('pdCreateOpen').addEventListener('click', openCreatePrisoner);
     return;
   }
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const p = r.prisoner;
   const empty = p.status === 'empty';
-  box.innerHTML = verifyBannerHtml() + `
+  box.innerHTML = `
     <div class="detail-head">
       <div class="av">${avatarHtml(p.avatar)}</div>
       <div><h2>${esc(p.name)}</h2><div class="muted">当前工作版本：v${p.currentVersion}${empty ? '（空脚本）' : ''}</div></div>
@@ -92,7 +90,6 @@ async function renderMyPrisoner() {
       <button class="subtab" data-psub="matches">对战记录</button>
     </div>
     <div id="psubBody"></div>`;
-  bindVerifyBanner(box, renderMyPrisoner);
   $('editPrisonerAvatarBtn').addEventListener('click', () => openPrisonerAvatarEditor(p.avatar));
   bindAccessCard(box, { promptUrl: '/api/prisoner/me/prompt', rotateUrl: '/api/prisoner/me/rotate-key', onRotated: renderMyPrisoner });
   box.querySelectorAll('.subtab').forEach((s) => s.addEventListener('click', () => {

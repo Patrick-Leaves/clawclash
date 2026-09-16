@@ -9,6 +9,22 @@ const execpool = require('../platform/execpool');
 
 const OK_CODE = 'module.exports = function onTurn(me, opp, game){ return game.legalMoves[0]; };';
 
+test('runner 环境白名单剥离会话与全部 SMTP 配置', () => {
+  const secretKeys = ['SESSION_SECRET', 'SMTP_HOST', 'SMTP_SECURE', 'SMTP_PORT', 'SMTP_USER',
+    'SMTP_PASS', 'SMTP_FROM', 'SMTP_DAILY_MAX', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE'];
+  const previous = new Map(secretKeys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of secretKeys) process.env[key] = `secret-${key}`;
+    const child = execpool._internals.childEnv();
+    for (const key of secretKeys) assert.equal(child[key], undefined, `${key} 不得传入 runner`);
+    if (process.env.PATH !== undefined) assert.equal(child.PATH, process.env.PATH);
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('常驻池：顺序任务复用 warm worker，结果正确', async () => {
   for (let i = 0; i < 3; i++) {
     const r = await execpool.run('clawclash', 'smoke', { code: OK_CODE }, 'pool-test:seq');

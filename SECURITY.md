@@ -19,7 +19,7 @@
 - **思考点计量（每手实例化）**：`makeRules(budget)` 每手一个计量实例，并发对局互不串改；交给脚本的 `Rules` 只含安全 API（**移除了 `_reset` / `_rawApply`**，杜绝脚本自行重置预算或绕过计量）。
 - **收敛逃逸面**：沙箱不再注入宿主内置对象（`Math/JSON/…` 用上下文自带版本），去掉了 `Error.constructor('return process')` 这类最易用的逃逸路径。
 - **接口频控**：`ratelimit.js` 对注册/登录/发布/挑战限速（超限 429）。
-- **反刷分**：同一哈希对前 10 场计入段位/战绩/ELO，之后为练习赛不计分；正式挑战要求账号邮箱已验证。
+- **反刷分**：同一哈希对前 10 场计入段位/战绩/ELO，之后为练习赛不计分；正式挑战保留 Bearer 鉴权与账号存在检查，邮箱所有权在新账号创建前通过验证码核验。
 - **鉴权**：密码 scrypt 加盐 + `timingSafeEqual`；会话为 HMAC 签名 Cookie（`HttpOnly`、`SameSite=Lax`）。
 
 ## 二、部署侧必须补齐（否则不要上公网）
@@ -43,8 +43,16 @@
 ## 三、其他部署项
 
 - **`SESSION_SECRET`**：务必设为稳定强随机值（未设则每次启动随机、重启即登出）。
-- **邮箱投递**：接入 SMTP 真正投递验证链接；**生产勿**把验证链接随接口响应回传前端（当前仅非生产环境为演示而回传，见 `server.js` 的 `sendVerificationEmail`）。
+- **邮箱投递**：真实 SMTP 仅由 Web 主进程执行，TLS ≥1.2 并验证证书链/主机名；隐式 TLS 或必须成功的 STARTTLS，升级后重新 EHLO 才 AUTH LOGIN。DATA 最终接受才记 sent，QUIT 失败不自动重发。production 无 SMTP 或配置无效时发码 503；配置 SMTP 后失败绝不降级。仅非 production、未配置 SMTP_HOST 且其余配置有效时可模拟并返回 devCode，生产日志与响应禁止泄露验证码、密码/哈希、Cookie、registrationId 和 SMTP 凭据。
 - **棋手密钥**：当前 `api_keys.key_plain` 明文留存以支持站内展示掩码与一键 Prompt（demo 取舍）。更高安全要求下应改为只存哈希、明文仅创建/轮换时一次性返回。
 - **反向代理**：`clientIp()` 仅在直连来自本机回环（即同机反代）时采用 `X-Forwarded-For` 的**最后一跳**（由反代追加的真实客户端地址；前面的条目可被客户端伪造，不予采信），公网直连时忽略该头以防伪造绕过频控。反代须配置 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，未配置时退回按直连地址聚合（生产同机反代下即所有用户共享频控桶，务必配置）。
-- **HTTPS**：生产应在代理层启用 TLS，并给会话 Cookie 增加 `Secure`。
-- **多实例**：`ratelimit.js` 为单进程内存实现；多实例需换共享存储（如 Redis）。
+- **HTTPS**：生产须在代理层启用 TLS；production 会话 Cookie 已带 Secure，并有 Path=/、HttpOnly、SameSite=Lax、固定七天期限；访问 /api/me 不滑动续期。登出只清浏览器 Cookie，不撤销已复制的 Cookie。
+- **单主进程**：本期只支持一个 Web/DB 主进程。邮箱互斥、在途发送上限（4）与请求频控均有进程状态；SQLite 持久账本不代表多实例安全，不能仅增加共享频控就开启 PM2 cluster。
+
+## 四、注册状态、隐私与发布
+
+- register 只激活已成功发码的 pending，verify-code 原子建号并删 pending 后才签会话；全部账号与登录态响应 no-store。哈希使用随机盐与 scrypt，轮次 ID 只放请求体和弹窗内存。
+- 北京时间自然日额度为邮箱 3/IP 10/全局默认 200；仅成功发信扣正式额度。未知发送保留 120 秒租约，崩溃恢复不补发；SMTP 与 SQLite 之间不承诺跨系统恰好一次。
+- pending 最长 30 分钟；验证码最长 10 分钟，启动、每分钟与访问时清理；第 5 次错码直接删行。发信终态记录按 accepted_at/finished_at 保留 48 小时，含限额所需邮箱/IP，不保存邮件正文或验证码。在线清理不承诺擦除 WAL、空闲页或备份。
+- 历史账号一次性迁移为已验证，保留 ID 与所有游戏资产；规范化邮箱碰撞则停止迁移/监听，不合并账号。旧验证链接/旧令牌辅助函数和 EMAIL_VERIFICATION 开关已移除，/api/me.emailVerified 是兼容字段。
+- 发布前做一致 SQLite 备份及恢复演练；停旧进程后同版本发布前后端。回退先暂停 register/resend，保留新账号、成功发信账本和冷却，禁止恢复可用的旧直建号接口。执行步骤与外部验收见 [部署指南](GameDesign/部署指南_上海宝塔_v1.0.md) 和 [验收记录](QA/邮箱验证码注册_AC01-AC35_验收记录_v1.1.md)。

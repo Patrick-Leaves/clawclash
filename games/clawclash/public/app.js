@@ -3,7 +3,7 @@
 // 面板标记在同目录 panel.html，由服务器内联进游戏页 /g/clawclash 后再加载本文件。
 // 整个文件包在 IIFE 内：所有声明均为本游戏私有，跨游戏零命名碰撞；对外只经
 // Platform.registerGame 暴露插件对象。壳工具（$ / apiFetch / esc / toast / rankLabel /
-// avatarHtml / openModal / popup / copyText / ME / RES_LABEL / verifyBannerHtml 等）
+// avatarHtml / openModal / popup / copyText / ME / RES_LABEL 等）
 // 是壳脚本的全局词法绑定，闭包内直接可用。
 (() => {
 const SIDE_LABEL = { black: '黑方', red: '红方', draw: '和棋' };
@@ -71,7 +71,6 @@ function tokenSvg(side) {
   </svg>`;
 }
 function miniIcon(side) { return `<span class="mini-icon">${tokenSvg(side)}</span>`; }
-// 邮箱验证横幅：壳的平台通用组件（verifyBannerHtml / bindVerifyBanner，见 /platform.js）。
 // 自取本游戏 bot（/api/bot/me）——/api/me 已收敛为账号-only，不再回传钳王 bot。
 async function renderMyBot() {
   const box = $('mybotBody');
@@ -79,15 +78,14 @@ async function renderMyBot() {
   box.innerHTML = loadingHtml();
   const r = await apiFetch('GET', '/api/bot/me');
   if (r.__status === 404) {
-    box.innerHTML = verifyBannerHtml() + `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="createBotOpen">创建棋手 →</button></div>`;
-    bindVerifyBanner(box, renderMyBot);
+    box.innerHTML = `<div class="empty-hero"><h2>你还没有棋手</h2><p>创建一名棋手，拿到它的棋手密钥，交给你的 Agent 来编写策略。</p><button class="primary" id="createBotOpen">创建棋手 →</button></div>`;
     $('createBotOpen').addEventListener('click', openCreateBot);
     return;
   }
   if (!r.ok) { box.innerHTML = `<div class="muted-center">${esc(r.error)}</div>`; return; }
   const b = r.bot;
   const empty = b.status === 'empty';
-  box.innerHTML = verifyBannerHtml() + `
+  box.innerHTML = `
     <div class="bot-card">
       <div class="av">${avatarHtml(b.avatar)}</div>
       <div class="grow">
@@ -97,7 +95,6 @@ async function renderMyBot() {
       </div>
       <div class="actions"><button class="primary" id="goDetail">详情</button></div>
     </div>`;
-  bindVerifyBanner(box, renderMyBot);
   $('goDetail').addEventListener('click', () => showDetail());
 }
 // ============================================================

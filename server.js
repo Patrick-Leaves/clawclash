@@ -14,25 +14,22 @@ const crypto = require('crypto');
 const db = require('./db');
 const auth = require('./auth');
 const rl = require('./ratelimit');
+const mail = require('./platform/mail');
+const { createRegistrationService } = require('./platform/registration');
 const registry = require('./games/registry');
 const { mountGameRoutes } = require('./platform/routes_game');
 
 const PORT = process.env.PORT || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
-// 邮箱验证开关：未接入 SMTP 期间默认「关闭」→ 新注册账号直接视为已验证，且启动时把历史未验证账号
-// 一次性置为已验证（免正式挑战被 403 拦、免前端「未验证」横幅）。接入 SMTP 后设环境变量
-// EMAIL_VERIFICATION=on 即恢复真实验证流程（届时新注册需完成邮箱验证才能发起正式挑战）。
-const EMAIL_VERIFICATION = process.env.EMAIL_VERIFICATION === 'on';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const AVATAR_DIR = path.join(PUBLIC_DIR, 'avatars');
 const MAX_AVATAR_BYTES = 100 * 1024; // 100KB
 const MIN_PASSWORD_LEN = 8;
 const MAX_PASSWORD_LEN = 256; // 上限防超长密码拖慢 scrypt
 fs.mkdirSync(AVATAR_DIR, { recursive: true });
-// 验证关闭时：把库里遗留的未验证账号一次性补齐为已验证（幂等，仅影响 email_verified=0 的行）。
-if (!EMAIL_VERIFICATION) {
-  const n = db.markAllAccountsVerified();
-  if (n) console.log(`[邮箱验证已关闭] 已将 ${n} 个历史未验证账号置为已验证`);
+const registration = createRegistrationService({ db, auth, rateLimit: rl, mail });
+if (registration.config.mode === 'unavailable') {
+  console.warn(`[注册邮件不可用] ${registration.config.error}`);
 }
 
 // ---- 前端共享资产（P4 前端插件化时随 UI 拆到各游戏目录）----
@@ -150,7 +147,9 @@ function clientIp(req) {
 // 命中频控则回 429 并返回 true（调用方应直接 return）
 function rateLimited(res, gate) {
   if (gate.ok) return false;
-  sendJson(res, 429, { ok: false, error: `请求过于频繁，请 ${gate.retryAfterSec}s 后重试` }, { 'Retry-After': String(gate.retryAfterSec) });
+  sendJson(res, 429, { ok: false, reason: 'rate_limited', error: `请求过于频繁，请 ${gate.retryAfterSec}s 后重试`, retryAfterSec: gate.retryAfterSec }, {
+    'Cache-Control': 'no-store', 'Retry-After': String(gate.retryAfterSec),
+  });
   return true;
 }
 // 公开访问 origin。生产经 Nginx 反代终止 TLS，到达 Node 的请求本身是明文，
@@ -167,16 +166,6 @@ function originOf(req) {
     || ((req.socket && req.socket.encrypted) ? 'https' : '')
     || ((IS_PROD && !isLocal) ? 'https' : 'http');
   return `${proto}://${host}`;
-}
-
-// 发送邮箱验证链接。生产须接入 SMTP（部署侧）；当前实现仅记录到日志，
-// 非生产环境额外把链接随响应返回，便于演示。返回 { verifyUrl, devExposed }。
-function sendVerificationEmail(req, account) {
-  const token = auth.makeVerifyToken(account.id);
-  const verifyUrl = `${originOf(req)}/api/account/verify?token=${encodeURIComponent(token)}`;
-  // TODO(部署): 接入 SMTP 真正投递到 account.email；勿在生产把链接回传前端。
-  console.log(`[邮箱验证] ${account.email} -> ${verifyUrl}`);
-  return { verifyUrl, devExposed: !IS_PROD };
 }
 
 // ---- 头像 dataURL 校验：类型 PNG/JPEG、≤100KB、1:1 正方形 ----
@@ -242,9 +231,9 @@ async function dispatch(req, res) {
     if (req.method === 'POST' || req.method === 'PUT') {
       let raw;
       try { raw = await readBody(req); }
-      catch (e) { return sendJson(res, e && e.tooLarge ? 413 : 400, { ok: false, error: e && e.tooLarge ? '请求体过大' : '读取请求体失败' }); }
+      catch (e) { return sendJson(res, e && e.tooLarge ? 413 : 400, { ok: false, reason: 'invalid_input', error: e && e.tooLarge ? '请求体过大' : '读取请求体失败' }, { 'Cache-Control': 'no-store' }); }
       body = parseJson(raw);
-      if (body === null) return sendJson(res, 400, { ok: false, error: 'JSON 解析失败' });
+      if (body === null) return sendJson(res, 400, { ok: false, reason: 'invalid_input', error: 'JSON 解析失败' }, { 'Cache-Control': 'no-store' });
     }
     await r.fn(req, res, match, body);
     return;
@@ -254,40 +243,30 @@ async function dispatch(req, res) {
 }
 
 // ============================================================
-// § 账号注册（第 1 步，不建游戏资产）
-// POST /api/account/register  body: { nickname, email, password }
-// 昵称/邮箱冲突分别返回 409 { field }
+// § 邮箱验证码注册：发码 → 核验建号（发码阶段不创建账号或会话）
 // ============================================================
-route('POST', '/api/account/register', (req, res, _m, body) => {
-  if (rateLimited(res, rl.allow('reg:' + clientIp(req), 5, 10 * 60 * 1000))) return;
-  const nickname = (body.nickname || '').trim();
-  const email = (body.email || '').trim().toLowerCase();
-  const password = body.password || '';
-  if (!nickname || !email || !password)
-    return sendJson(res, 400, { ok: false, error: '昵称、邮箱、密码均为必填' });
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
-    return sendJson(res, 400, { ok: false, error: '邮箱格式不正确' });
-  if (password.length < MIN_PASSWORD_LEN || password.length > MAX_PASSWORD_LEN)
-    return sendJson(res, 400, { ok: false, error: `密码需 ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} 位` });
-  if (db.getAccountByNickname(nickname))
-    return sendJson(res, 409, { ok: false, field: 'nickname', error: '昵称已被占用' });
-  if (db.getAccountByEmail(email))
-    return sendJson(res, 409, { ok: false, field: 'email', error: '该邮箱已注册' });
-  const account = db.createAccount(nickname, email, auth.hashPassword(password));
-  let verifyUrl;
-  if (EMAIL_VERIFICATION) {
-    const mail = sendVerificationEmail(req, account);
-    // 仅非生产环境回传验证链接，便于演示（生产由邮件投递）
-    verifyUrl = mail.devExposed ? mail.verifyUrl : undefined;
-  } else {
-    // 验证关闭：直接置为已验证，跳过邮箱验证流程
-    db.setEmailVerified(account.id);
-  }
-  sendJson(res, 201, {
-    ok: true, accountId: account.id, nickname: account.nickname,
-    emailVerified: !EMAIL_VERIFICATION,
-    verifyUrl,
-  }, { 'Set-Cookie': auth.sessionCookie(account.id) });
+function sendRegistrationResult(res, outcome, extraHeaders) {
+  sendJson(res, outcome.status, outcome.body, {
+    'Cache-Control': 'no-store',
+    ...(outcome.headers || {}),
+    ...(extraHeaders || {}),
+  });
+}
+
+route('POST', '/api/account/register', async (req, res, _m, body) => {
+  const outcome = await registration.register(body, clientIp(req));
+  sendRegistrationResult(res, outcome);
+});
+
+route('POST', '/api/account/verify-code', async (req, res, _m, body) => {
+  const outcome = await registration.verify(body, clientIp(req));
+  const headers = outcome.account ? { 'Set-Cookie': auth.sessionCookie(outcome.account.id) } : undefined;
+  sendRegistrationResult(res, outcome, headers);
+});
+
+route('POST', '/api/account/resend-code', async (req, res, _m, body) => {
+  const outcome = await registration.resend(body, clientIp(req));
+  sendRegistrationResult(res, outcome);
 });
 
 // ============================================================
@@ -295,42 +274,23 @@ route('POST', '/api/account/register', (req, res, _m, body) => {
 // ============================================================
 route('POST', '/api/auth/login', (req, res, _m, body) => {
   if (rateLimited(res, rl.allow('login:' + clientIp(req), 10, 5 * 60 * 1000))) return;
-  const email = (body.email || '').trim().toLowerCase();
-  const password = body.password || '';
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+    || typeof body.email !== 'string' || typeof body.password !== 'string') {
+    return sendJson(res, 400, { ok: false, reason: 'invalid_input', error: '请求参数不正确' }, { 'Cache-Control': 'no-store' });
+  }
+  const email = body.email.trim().toLowerCase();
+  const password = body.password;
   const account = db.getAccountByEmail(email);
   // password.length 短路在 verifyPassword 之前：超长密码不可能匹配（注册已限长），直接挡掉 scrypt 开销
   if (!account || password.length > MAX_PASSWORD_LEN || !auth.verifyPassword(password, account.password_hash))
-    return sendJson(res, 401, { ok: false, error: '邮箱或密码错误' });
-  sendJson(res, 200, { ok: true, accountId: account.id, nickname: account.nickname }, { 'Set-Cookie': auth.sessionCookie(account.id) });
+    return sendJson(res, 401, { ok: false, error: '邮箱或密码错误' }, { 'Cache-Control': 'no-store' });
+  sendJson(res, 200, { ok: true, accountId: account.id, nickname: account.nickname }, {
+    'Cache-Control': 'no-store', 'Set-Cookie': auth.sessionCookie(account.id),
+  });
 });
 
 route('POST', '/api/auth/logout', (req, res) => {
-  sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookie() });
-});
-
-// ============================================================
-// § 邮箱验证：点击邮件链接 / 站内重新发送
-// ============================================================
-route('GET', '/api/account/verify', (req, res) => {
-  const url = new URL(req.url, 'http://x');
-  const accountId = auth.verifyVerifyToken(url.searchParams.get('token') || '');
-  const page = (title, msg) => {
-    res.writeHead(accountId ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:system-ui;max-width:520px;margin:80px auto;text-align:center;color:#274"><h2>${title}</h2><p>${msg}</p><p><a href="/">返回首页</a></p></body>`);
-  };
-  if (!accountId) return page('验证链接无效或已过期', '请重新登录后在「我的棋手」里重新发送验证邮件。');
-  if (!db.getAccountById(accountId)) return page('账号不存在', '该账号可能已被删除。');
-  db.setEmailVerified(accountId);
-  page('邮箱验证成功 ✓', '现在可以发起正式挑战、参与天梯排位了。');
-});
-
-route('POST', '/api/account/resend-verification', (req, res) => {
-  const { account, error } = requireSession(req);
-  if (error) return sendJson(res, 401, { ok: false, error });
-  if (rateLimited(res, rl.allow('verify:' + account.id, 3, 10 * 60 * 1000))) return;
-  if (account.email_verified) return sendJson(res, 200, { ok: true, emailVerified: true, message: '邮箱已验证' });
-  const mail = sendVerificationEmail(req, account);
-  sendJson(res, 200, { ok: true, emailVerified: false, verifyUrl: mail.devExposed ? mail.verifyUrl : undefined });
+  sendJson(res, 200, { ok: true }, { 'Cache-Control': 'no-store', 'Set-Cookie': auth.clearCookie() });
 });
 
 // ============================================================
@@ -343,7 +303,7 @@ route('POST', '/api/account/resend-verification', (req, res) => {
 const gameWebs = {}; // gid → games/<gid>/server 适配模块（挂载循环填充）
 route('GET', '/api/me', (req, res) => {
   const { account, error } = requireSession(req);
-  if (error) return sendJson(res, 401, { ok: false, error });
+  if (error) return sendJson(res, 401, { ok: false, error }, { 'Cache-Control': 'no-store' });
   const players = {};
   for (const gid of registry.ids) {
     const p = gameWebs[gid] && gameWebs[gid].store.getByAccount(account.id);
@@ -356,7 +316,7 @@ route('GET', '/api/me', (req, res) => {
     account: { id: account.id, nickname: account.nickname, email: account.email },
     emailVerified: !!account.email_verified,
     players,
-  });
+  }, { 'Cache-Control': 'no-store' });
 });
 
 // ============================================================
@@ -469,7 +429,10 @@ for (const gid of registry.ids) {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Authorization,Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' }); return res.end(); }
   try { await dispatch(req, res); }
-  catch (e) { sendJson(res, 500, { ok: false, error: String(e?.message || e) }); }
+  catch (e) {
+    console.error('[请求处理失败]', e && e.stack ? e.stack : e);
+    sendJson(res, 500, { ok: false, error: '服务器内部错误' }, { 'Cache-Control': 'no-store' });
+  }
 });
 // 长连接调优（方案 C）：保持 HTTP keep-alive，避免试玩每步走子都重建 TCP/TLS。
 // keepAliveTimeout 略大于反代（Nginx 默认 upstream keepalive 60s），headersTimeout 再大一档，

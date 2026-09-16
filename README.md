@@ -35,9 +35,25 @@ npm run test:rules      # 钳王争霸规则 v2.1 §5.3 全部官方示例
 - **服务器部署（宝塔/PM2/Nginx/备案）**：完整分步指南见 [`GameDesign/部署指南_上海宝塔_v1.0.md`](GameDesign/部署指南_上海宝塔_v1.0.md)（香港服务器部署形态同指南：PM2 root + ecosystem.config.js + Nginx 反代 + clawbot/iptables 加固）。
 - **`SESSION_SECRET`**：未设置时每次启动随机生成（重启即登出）。生产必须设为稳定的强随机值。
 - **脚本代码隔离**：平台运行玩家提交的不可信 JS。每手/每回合设挂钟超时阻断死循环；但 Node `vm` 不是安全边界，生产部署**必须**叠加 OS 级隔离（独立低权限进程/容器、只读文件系统、禁网络出站、令进程无法读取 `SESSION_SECRET` 与数据库文件）。详见 `SECURITY.md`。
-- **邮箱验证**：默认**关闭**（`EMAIL_VERIFICATION` 未设为 `on`）——新注册账号直接视为已验证，历史未验证账号在启动时一次性补齐，正式挑战不再拦截。接入 SMTP 后设环境变量 `EMAIL_VERIFICATION=on` 即恢复真实验证：正式挑战要求邮箱已验证，验证链接经 SMTP 投递（未配置时仅记录在服务端日志、**不可用于生产**）。
+- **邮箱验证码注册**：提交资料只发六位验证码（200），核验通过才原子创建已验证账号并登录（201）。生产缺失/无效 SMTP 时发码返回 503，已有账号登录与游戏继续可用。开发模拟仅限非 production 且未配置 SMTP_HOST、其他配置有效；真实 SMTP 失败不降级。旧验证链接、EMAIL_VERIFICATION 开关及挑战邮箱状态门槛已删除，挑战仍校验账号存在与 Bearer 密钥。
 - **数据库**：`sixchess.db`（SQLite WAL）随启动自动建表与增量迁移，已被 `.gitignore` 忽略。路径可用环境变量 `DB_PATH` 覆盖（默认不变；测试打临时库用）。
-- **P3 数据层迁移**：旧版「按游戏分表」的库在新代码首次启动时**自动一次性迁移**到统一表族（公开 id 原样保留，旧表重命名 `legacy_*` 留底，迁移失败自动回滚且不改库）。生产更新前请先备份 `sixchess.db*` 三个文件再 `git pull` + 重启。
+- **P3 数据层迁移**：旧版「按游戏分表」的库在新代码首次启动时**自动一次性迁移**到统一表族（公开 id 原样保留，旧表重命名 `legacy_*` 留底，迁移失败自动回滚且不改库）。生产更新前停止旧进程，通过 SQLite 备份接口生成并验证一致快照；不要在运行中分别复制 DB/WAL/SHM。邮箱注册迁移遇规范化邮箱碰撞时停止上线。
+
+### 注册邮件配置与运行边界
+
+| 配置 | 规则 |
+|---|---|
+| SMTP_HOST | 真实 SMTP 主机；production 缺失时拒绝发码 |
+| SMTP_SECURE / SMTP_PORT | true（默认）为隐式 TLS，默认 465；false 必须成功 STARTTLS，默认 587；端口 1–65535 |
+| SMTP_USER / SMTP_PASS | 真实模式必填；凭据只存在 Web 主进程 |
+| SMTP_FROM | 默认 SMTP_USER；仅支持单一邮箱地址，无显示名 |
+| SMTP_DAILY_MAX | 默认 200；非负安全整数，0 仅关闭全局每日上限 |
+
+- 每邮箱 3 封、每 IP 10 封、全平台默认 200 封，均按北京时间自然日统计 SMTP 最终接受的邮件；预留/结果不明暂占名额至 120 秒租约到期，不自动补发。
+- 成功发送后同邮箱冷却 60 秒。验证码最长 10 分钟，整轮最多 30 分钟；第 5 次错码删除 pending，过期或耗尽必须重新填写资料。重发成功换码和 registrationId，失败保留旧有效轮次；首发失败不建 pending。
+- 只能部署一个 Web/DB 主进程，PM2 禁用 cluster 多实例；runner 池仅执行游戏，环境白名单排除所有 SMTP 配置与 SESSION_SECRET。
+- 迁移先于监听：历史 email_verified=0 一次性置 1，账号 ID、密码、选手、Bot Key、代码、RP、排行和战报保留；/api/me.emailVerified 保留为兼容字段。
+- 后端、共享前端、游戏脚本同版本发布；旧页面缺注册协议字段时收到 409 刷新提示。回退先暂停 register/resend，保留登录/游戏，禁止重开旧直建号接口；保留新账号及 sent 账本。详见 [部署指南](GameDesign/部署指南_上海宝塔_v1.0.md) 与 [AC01–AC35 验收记录](QA/邮箱验证码注册_AC01-AC35_验收记录_v1.1.md)。
 
 ## 结构
 
@@ -45,12 +61,14 @@ npm run test:rules      # 钳王争霸规则 v2.1 §5.3 全部官方示例
 server.js            # 平台层 HTTP 服务器：HTTP 基建、账号体系、静态资源、前端共享资产、
                      # 页面组装（MPA：/ 首页 + /g/<id> 游戏页，注册表驱动）、
                      # 游戏路由挂载循环（新增游戏无需改动本文件）
-auth.js              # 密码 scrypt 哈希 + 签名 Cookie 会话 + 邮箱验证 token（HMAC）
+auth.js              # 密码/验证码 scrypt 哈希 + 签名 Cookie 会话
 db.js                # node:sqlite 持久化（P3 统一数据层）：accounts + 统一 players/密钥/版本/battles/
                      # 哈希对（game_id 区分游戏，公开 id 按游戏独立自增）+ gameStore(gameId) 工厂
                      # + 旧双表族库的一次性启动迁移（旧表留底 legacy_*）；路径可用 DB_PATH 覆盖
 ratelimit.js         # 内存级接口频控（令牌窗口）
 platform/            # 平台通用模块（游戏无关）
+  registration.js   #   两步注册、邮箱互斥、额度预留与 pending 生命周期
+  mail.js           #   主进程 SMTP（TLS/STARTTLS）与受限开发模拟
   routes_game.js     #   游戏路由工厂：每游戏全套平台通用 API 只实现一份，
                      #   规范路径（/api/games/<id>/…）+ legacy 别名（旧路径）双注册
   settle.js          #   正式挑战结算核心：锁 + 锁内重读 + 哈希对计分窗口 + RP 结算（唯一一份；
@@ -108,6 +126,7 @@ test_rules.js        # 钳王争霸规则单元测试（针对 games/clawclash/e
 - 平台总览：[`GameDesign/平台系统说明_v1.1.md`](GameDesign/平台系统说明_v1.1.md)
 - 工程架构详解：[技术架构说明 v1.0](GameDesign/技术架构说明_v1.0.md)
 - 新增游戏操作手册：[新增游戏SOP v1.0](GameDesign/新增游戏SOP_v1.0.md)
+- 邮箱验证码注册（已实现，外部验收见 QA）：[Spec v1.1](GameDesign/邮箱验证码注册_Spec_v1.1.md)
 - 钳王争霸：[规则 v2.1](GameDesign/钳王争霸规则_v2.1.md) · [Agent 系统策划案 v1.4](GameDesign/钳王争霸Agent系统策划案_v1.4增量.md)
 - 囚徒困境：[策划案 v1.0](GameDesign/囚徒困境策划案_v1.0.md)
 - 象棋暗战：[暗棋规则 v1.0](GameDesign/暗棋规则_v1.0.md)

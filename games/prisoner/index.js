@@ -23,11 +23,12 @@ module.exports = {
   leaderboardTtlMs: 10000,
   guidePath: '/agent-guide-prisoner',
   guideMarkdown: buildGuide({ minRounds: MIN_ROUNDS, maxRounds: MAX_ROUNDS, scoredLimit: SCORED_LIMIT }),
-  // 前端插件（P4）：/builtin-bots.js 提供训练囚徒的浏览器本地执行（与钳王共享，去重加载）
+  // 前端插件（P4）：/builtin-bots.js 同时包含钳王与囚徒运行时，其首个模块依赖
+  // /game-rules.js；MPA 每个游戏页独立加载资源，因此囚徒页也必须显式先加载规则核心。
   // nav：壳层统一渲染的侧栏二级导航（key 须与 app.js 里 makeTabs 的 tab 名一致；auth=需登录；
   // hash=该 tab 在 URL 里的深链接名，如 /g/prisoner#leaderboard，缺省=key）
   client: {
-    scripts: ['/builtin-bots.js', '/games/prisoner/app.js'],
+    scripts: ['/game-rules.js', '/builtin-bots.js', '/games/prisoner/app.js'],
     nav: [
       { key: 'pplay', hash: 'play', label: '试玩' },
       { key: 'pleaderboard', hash: 'leaderboard', label: '天梯榜' },
