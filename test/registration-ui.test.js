@@ -319,3 +319,20 @@ test('guarded login consumes intent across panel switches and ordinary login sta
     assert.equal(shown(h, 'authModal'), false); assert.deepEqual(Array.from(h.tabs), guard ? ['mine'] : []); assert.equal(h.run('pendingNav'), null); assert.equal(h.tabs.authChanges, 1);
   }
 });
+
+// 假 DOM 只解析 id/class/disabled，不解析文字内容，故文案断言直接读 HTML 片段文件。
+test('注册第二步面板包含垃圾邮件提示，且第一步面板不含', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../public/fragments/shared_modals.html'), 'utf8');
+  const start = html.indexOf('id="authRegister"');
+  const mid = html.indexOf('id="authVerify"');
+  const end = html.indexOf('id="authLogin"');
+  assert.ok(start >= 0 && mid > start && end > mid, '弹窗面板标记顺序应为 authRegister → authVerify → authLogin');
+
+  const registerPanel = html.slice(start, mid);
+  const verifyPanel = html.slice(mid, end);
+
+  assert.match(verifyPanel, /verifySpamHint/, '第二步面板应有 id 为 verifySpamHint 的提示元素');
+  assert.match(verifyPanel, /垃圾邮件/, '第二步面板的提示应提到「垃圾邮件」');
+  assert.match(verifyPanel, /非垃圾邮件/, '第二步面板的提示应给出「标记为非垃圾邮件」的动作');
+  assert.doesNotMatch(registerPanel, /垃圾邮件/, '第一步面板不应出现该提示');
+});
