@@ -11,3 +11,6 @@ public/avatars/
 
 # 部署产物：含 SESSION_SECRET 等机密，严禁提交（见部署指南 §2.3）
 ecosystem.config.js
+
+# smtp-check.js 的本地凭据文件（含邮箱授权码），仅本机使用
+smtp-local.json
