@@ -18,8 +18,10 @@ code,pre,.mono { font-family:"Cascadia Code","Fira Code",monospace; }
 h1,h2,h3 { font-weight:600; }
 a { color:var(--blue); cursor:pointer; text-decoration:none; }
 a:hover { text-decoration:underline; }
-.site-footer { text-align:center; padding:20px 16px 28px; font-size:13px; }
+.site-footer { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:6px 18px; padding:20px 16px 28px; font-size:13px; }
 .site-footer a { color:var(--ink); opacity:.75; }
+.site-footer .beian-police { display:inline-flex; align-items:center; gap:4px; }
+.site-footer .beian-police img { display:block; }
 .hidden { display:none !important; }
 
 /* ---- Topbar ---- */
