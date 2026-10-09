@@ -602,6 +602,29 @@ Create or update a dated implementation/deployment report under `GameDesign/` on
 - **Test coverage:** 正常动作、表示不一致、异常、超大/副作用对象、计时方向、history 共享引用、非法回放、XSS 文本、masked judge 和指南示例均有任务归属。
 - **Deployment safety:** 计划明确要求先本地全量测试、再授权部署、再用测试账号验证并准备回滚；没有把文档中的部署建议当成已经执行的部署指令。线上安全报告中的主动验证清单仅在获得书面授权后执行。
 
+## Execution Status（2026-10-10）
+
+已在隔离分支 `codex/agent-security-hardening` 实施并验证：
+
+- `645c11c`：固化本 Plan。
+- `a894bc5`：两游戏 Agent 动作 VM 内规范化、引擎合法动作对象执行、history 视图隔离、每方独立 10 秒时钟。
+- `7bdfa01`：公共回放 DTO 脱敏、暗棋 masked `judge`、回放重建、limits/指南同步、安全评估与规则回归测试。
+- `1521551`：暗棋指南更新为独立时钟和新父进程上限。
+- `6ba2e81`：试玩路径 history 隔离和规范动作执行。
+
+验证结果：
+
+- `npm test`：176 passed / 0 failed。
+- `npm run test:rules`：12 passed / 0 failed。
+- 新增动作、时钟、RNG 隔离、masked judge、公共回放脱敏、runner 环境和规则向量测试均通过。
+- `test/locks.test.js` 曾出现一次异 key 并行的时序抖动；单独重复运行和随后全量测试均通过，本轮未修改无关锁实现。
+
+尚未执行：
+
+- 生产部署。
+- 未经授权的线上主动安全验证。
+- nginx/TLS/CSP/HSTS/网络出口等不在当前仓库中的运维配置核查。
+- 头像魔数/浏览器解析的授权测试。
 ## Execution Handoff
 
 Plan complete and saved to `docs/superpowers/plans/2026-10-09-agent-security-hardening.md`. Please review the plan. Does it capture what you want?
