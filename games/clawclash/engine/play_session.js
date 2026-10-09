@@ -71,7 +71,8 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     } else {
       const okMv = h.from && h.to && moves.some((m) => m.from[0] === h.from[0] && m.from[1] === h.from[1] && m.to[0] === h.to[0] && m.to[1] === h.to[1]);
       if (!okMv) return { ok: false, status: 400, error: `第 ${turn} 手走法非法` };
-      applyStep({ from: h.from, to: h.to });
+      const selected = moves.find((m) => m.from[0] === h.from[0] && m.from[1] === h.from[1] && m.to[0] === h.to[0] && m.to[1] === h.to[1]);
+      applyStep(selected);
     }
   }
 
@@ -98,7 +99,7 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     } catch { finish(humanSide, 'error'); break; }
     const okMv = mv && mv.from && mv.to && moves.some((m) => m.from[0] === mv.from[0] && m.from[1] === mv.from[1] && m.to[0] === mv.to[0] && m.to[1] === mv.to[1]);
     if (!okMv) { finish(humanSide, 'illegal'); break; }
-    applyStep(mv);
+    applyStep(moves.find((m) => m.from[0] === mv.from[0] && m.from[1] === mv.from[1] && m.to[0] === mv.to[0] && m.to[1] === mv.to[1]));
   }
 
   const toMove = status ? null : (local ? side : humanSide);

@@ -21,6 +21,16 @@ function piecesOf(board, side) {
   return p;
 }
 
+function cloneHistory(history) {
+  return history.map((h) => ({
+    turn: h.turn, side: h.side,
+    from: h.from ? h.from.slice() : null,
+    to: h.to ? h.to.slice() : null,
+    captured: Array.isArray(h.captured) ? h.captured.map((p) => p.slice()) : [],
+    pass: !!h.pass,
+  }));
+}
+
 // 派生独立随机源：黑/红各一条，互不串扰——一方多调几次 game.random() 无法移动对方的
 // 随机序列（排位双方都是用户脚本，共享流构成操纵向量）。参照囚徒困境 engine.js 的 deriveRng。
 function deriveRng(seed) {
@@ -33,19 +43,22 @@ function deriveRng(seed) {
 // bots = { black: bot, red: bot }
 // maxMatchMs：单场挂钟上限（安全阀，防"每手不超时但整体长拖"的慢速消耗）。
 // 超时则中止，由"该走方"判 runtime 负——正常对局远达不到此值。
-function playMatch(bots, seed, budget, maxMatchMs = 10000) {
+function playMatch(bots, seed, budget, maxMatchMs = 10000, options = {}) {
+  const now = options.now || Date.now;
+  const perSideBudgetMs = options.perSideBudgetMs ?? 10000;
   const rng = deriveRng(seed);
   let board = initBoard();
   let side = 'black', turn = 1, ncm = 0, lastPass = false;
   const history = [];
-  const deadline = Date.now() + maxMatchMs;
+  const remaining = { black: perSideBudgetMs, red: perSideBudgetMs };
+  const deadline = now() + maxMatchMs;
 
   const fin = (winner, reason) => ({
-    winner, reason, history, turns: history.length, finalPieces: Rules._counts(board),
+    winner, reason, history: cloneHistory(history), turns: history.length, finalPieces: Rules._counts(board),
   });
 
   while (true) {
-    if (Date.now() > deadline) return fin(Rules.other(side), 'runtime'); // 单场超时：该走方判负
+    if (now() > deadline) return fin(Rules.other(side), 'runtime'); // 单场超时：该走方判负
     const moves = Rules.legalMoves(board, side);
 
     if (moves.length === 0) { // 停一手:引擎自动 pass,不调用 onTurn
@@ -73,26 +86,30 @@ function playMatch(bots, seed, budget, maxMatchMs = 10000) {
       turnNumber: turn,
       noCaptureMoves: ncm,
       legalMoves: moves.map((m) => ({ from: m.from.slice(), to: m.to.slice() })),
-      history,
+      history: cloneHistory(history),
       random: rng[side], // 每座位独立随机流（见 deriveRng）
       rules: makeRules(budget), // 本手计量实例(交给棋手)
     };
 
     let mv;
+    const startedAt = now();
     try {
       mv = bots[side].onTurn(me, opponent, game);
     } catch (e) {
+      remaining[side] -= Math.max(0, now() - startedAt);
       return fin(oppSide, e && e.quota ? 'runtime' : 'error');
     }
-    const ok = mv && mv.from && mv.to && moves.some((m) =>
+    remaining[side] -= Math.max(0, now() - startedAt);
+    if (remaining[side] <= 0) return fin(oppSide, 'runtime');
+    const selected = mv && moves.find((m) =>
       m.from[0] === mv.from[0] && m.from[1] === mv.from[1] &&
       m.to[0] === mv.to[0] && m.to[1] === mv.to[1]);
-    if (!ok) return fin(oppSide, 'illegal');
+    if (!selected) return fin(oppSide, 'illegal');
 
-    const r = Rules._rawApply(board, side, mv); // 引擎结算不占脚本预算
+    const r = Rules._rawApply(board, side, selected); // 引擎结算不占脚本预算
     board = r.board;
     ncm = r.captured.length > 0 ? 0 : ncm + 1;
-    history.push({ turn, side, from: mv.from.slice(), to: mv.to.slice(), captured: r.captured, pass: false });
+    history.push({ turn, side, from: selected.from.slice(), to: selected.to.slice(), captured: r.captured.map((p) => p.slice()), pass: false });
     turn++;
     const v = Rules.judge(board, ncm);
     if (v) return fin(v.winner, v.reason);

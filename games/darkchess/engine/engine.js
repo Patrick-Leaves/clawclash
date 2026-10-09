@@ -32,6 +32,21 @@ function actionsEqual(a, b) {
     a.from[0] === b.from[0] && a.from[1] === b.from[1] && a.to[0] === b.to[0] && a.to[1] === b.to[1];
 }
 
+function cloneAction(action) {
+  if (!action) return null;
+  if (action.action === 'flip') return { action: 'flip', at: action.at.slice() };
+  return { action: 'move', from: action.from.slice(), to: action.to.slice() };
+}
+
+function clonePiece(piece) { return piece ? { ...piece } : piece; }
+function cloneHistory(history) {
+  return history.map((h) => ({
+    turn: h.turn, seat: h.seat, action: cloneAction(h.action),
+    captured: Array.isArray(h.captured) ? h.captured.map(clonePiece) : [],
+    revealed: clonePiece(h.revealed), pass: !!h.pass,
+  }));
+}
+
 // 座位当前可选动作：定序阶段只有翻棋；行棋阶段 = 翻棋（若还有暗棋）+ 移动/吃子。
 function legalActionsForSeat(matchState, seat) {
   const flips = core.hiddenCells(matchState.board).map(([x, y]) => ({ action: 'flip', at: [x, y] }));
@@ -109,7 +124,7 @@ function buildView(matchState, seat) {
     turnNumber: matchState.turnNumber,
     noCaptureCount: matchState.noCaptureCount,
     legalActions: legalActionsForSeat(matchState, seat),
-    history: matchState.history,
+    history: cloneHistory(matchState.history),
     random: matchState.rngOf[seat], // 每座位独立随机流（见 initMatchState）
     rules: {
       legalMoves: core.legalMoves,
@@ -161,7 +176,7 @@ function stepPass(matchState) {
 // 推进一次真实动作（翻棋/移动/吃子）：返回 null 表示对局继续；否则同 stepPass 的终局对象。
 function stepAction(matchState, seat, action) {
   const { captured, revealed } = applyActionMutating(matchState, seat, action);
-  matchState.history.push({ turn: matchState.turnNumber, seat, action, captured, revealed, pass: false });
+  matchState.history.push({ turn: matchState.turnNumber, seat, action: cloneAction(action), captured: captured.map(clonePiece), revealed: clonePiece(revealed), pass: false });
   matchState.noCaptureCount = captured.length > 0 ? 0 : matchState.noCaptureCount + 1;
   matchState.lastWasPass = false;
   let result = null;
@@ -175,19 +190,22 @@ function stepAction(matchState, seat, action) {
 
 function finFrom(matchState, winner, reason) {
   return {
-    winner, reason, turns: matchState.history.length, history: matchState.history, initialBoard: matchState.initialBoard,
+    winner, reason, turns: matchState.history.length, history: cloneHistory(matchState.history), initialBoard: core.cloneBoard(matchState.initialBoard),
     finalCounts: core.counts(matchState.board), finalValues: core.pieceValueSum(matchState.board),
   };
 }
 
 // bots = { a: {onTurn}, b: {onTurn} }
 // 单场挂钟上限（安全阀，防「每手不超时但整体长拖」）。超时则中止，由该走方判 runtime 负。
-function playMatch(bots, seed, maxMatchMs = 15000) {
+function playMatch(bots, seed, maxMatchMs = 15000, options = {}) {
+  const now = options.now || Date.now;
+  const perSideBudgetMs = options.perSideBudgetMs ?? 10000;
   const matchState = initMatchState(seed);
-  const deadline = Date.now() + maxMatchMs;
+  const remaining = { a: perSideBudgetMs, b: perSideBudgetMs };
+  const deadline = now() + maxMatchMs;
 
   while (true) {
-    if (Date.now() > deadline) return finFrom(matchState, otherSeat(matchState.turnSeat), 'runtime');
+    if (now() > deadline) return finFrom(matchState, otherSeat(matchState.turnSeat), 'runtime');
     const seat = matchState.turnSeat;
     const actions = legalActionsForSeat(matchState, seat);
 
@@ -199,15 +217,19 @@ function playMatch(bots, seed, maxMatchMs = 15000) {
 
     const view = buildView(matchState, seat);
     let action;
+    const startedAt = now();
     try {
       action = bots[seat].onTurn(view.me, view.opponent, view.game);
     } catch (e) {
+      remaining[seat] -= Math.max(0, now() - startedAt);
       return finFrom(matchState, otherSeat(seat), e && e.timeout ? 'runtime' : 'error');
     }
-    const ok = actions.some((a) => actionsEqual(a, action));
-    if (!ok) return finFrom(matchState, otherSeat(seat), 'illegal');
+    remaining[seat] -= Math.max(0, now() - startedAt);
+    if (remaining[seat] <= 0) return finFrom(matchState, otherSeat(seat), 'runtime');
+    const selected = actions.find((a) => actionsEqual(a, action));
+    if (!selected) return finFrom(matchState, otherSeat(seat), 'illegal');
 
-    const r = stepAction(matchState, seat, action);
+    const r = stepAction(matchState, seat, selected);
     if (r) return finFrom(matchState, r.winner, r.reason);
     if (matchState.turnNumber > 4000) return finFrom(matchState, 'draw', 'draw'); // 理论不可达的安全阀
   }

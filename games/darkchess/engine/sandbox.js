@@ -36,13 +36,35 @@ function makeBot(code) {
   const { onTurn, ctx, error } = compile(code);
   if (error) return { bot: null, error };
   ctx.__onTurn = onTurn;
-  const invoker = new vm.Script('__onTurn(__me, __opp, __game)', { filename: 'invoke.js' });
+    const invoker = new vm.Script(`
+    (() => {
+      const value = __onTurn(__me, __opp, __game);
+      const coord = (v) => {
+        if (!Array.isArray(v) || v.length < 2) return null;
+        const x = v[0], y = v[1];
+        return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && x < 4 && y >= 0 && y < 4 ? [x, y] : null;
+      };
+      if (!value || typeof value !== 'object') return null;
+      if (value.action === 'flip') {
+        const at = coord(value.at);
+        return at ? { action: 'flip', at } : null;
+      }
+      if (value.action === 'move') {
+        const from = coord(value.from), to = coord(value.to);
+        return from && to ? { action: 'move', from, to } : null;
+      }
+      return null;
+    })()
+  `, { filename: 'invoke.js' });
   const bot = {
     name: 'user',
     onTurn(me, opponent, game) {
       ctx.__me = me; ctx.__opp = opponent; ctx.__game = game;
       try {
-        return invoker.runInContext(ctx, { timeout: MOVE_TIMEOUT_MS });
+        const value = invoker.runInContext(ctx, { timeout: MOVE_TIMEOUT_MS });
+        if (!value) return null;
+        if (value.action === 'flip') return { action: 'flip', at: [value.at[0], value.at[1]] };
+        return { action: 'move', from: [value.from[0], value.from[1]], to: [value.to[0], value.to[1]] };
       } catch (e) {
         const msg = (e && e.message) ? e.message : String(e);
         const timedOut = /timed out/i.test(msg);

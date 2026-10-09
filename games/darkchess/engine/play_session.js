@@ -58,7 +58,7 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     } else {
       const ok = h.action && actions.some((a) => actionsEqual(a, h.action));
       if (!ok) return { ok: false, status: 400, error: `第 ${matchState.turnNumber} 手动作非法` };
-      status = stepAction(matchState, matchState.turnSeat, h.action);
+      status = stepAction(matchState, matchState.turnSeat, actions.find((a) => actionsEqual(a, h.action))); 
     }
   }
 
@@ -73,7 +73,7 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     catch { status = { over: true, winner: humanSeat, reason: 'error' }; break; }
     const ok = action && actions.some((a) => actionsEqual(a, action));
     if (!ok) { status = { over: true, winner: humanSeat, reason: 'illegal' }; break; }
-    status = stepAction(matchState, matchState.turnSeat, action);
+    status = stepAction(matchState, matchState.turnSeat, actions.find((a) => actionsEqual(a, action))); 
   }
 
   const toMoveSeat = status ? null : (local ? matchState.turnSeat : humanSeat);
