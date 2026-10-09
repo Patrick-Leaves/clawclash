@@ -188,6 +188,9 @@ test('API 端到端冒烟（真实 server + 临时库）', { timeout: 480000 }, 
     const m = await api(B, 'GET', '/api/match/' + r.json.games[0].matchUrlId);
     assert.equal(m.status, 200);
     assert.ok(Array.isArray(m.json.gameData.history), '回放应含逐手棋谱');
+    for (const field of ['seed', 'battle_id', 'challenger_bot_id', 'challenged_bot_id', 'ch_code_hash', 'cd_code_hash', 'game_json']) {
+      assert.equal(Object.prototype.hasOwnProperty.call(m.json, field), false, `公开回放不应暴露 ${field}`);
+    }
     // 公开 rp 与响应一致
     const pubA = await api(B, 'GET', `/api/bots/${bots[0].botId}/public`);
     assert.equal(pubA.json.bot.rp, r.json.rpChange.challenger.to);

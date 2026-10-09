@@ -285,10 +285,20 @@ function dqBuildReplayFrames(initialBoard, history) {
   for (const h of history) {
     if (h.pass || !h.action) { frames.push({ board: core.cloneBoard(board), step: h }); continue; }
     if (h.action.action === 'flip') {
-      board = core.applyFlip(board, h.action.at).board;
+      const nb = core.cloneBoard(board);
+      const [x, y] = h.action.at;
+      if (h.revealed) nb[x][y] = { hidden: false, side: h.revealed.side, kind: h.revealed.kind, power: h.revealed.power };
+      board = nb;
     } else {
-      const side = board[h.action.from[0]][h.action.from[1]].side;
-      board = core.applyMove(board, side, h.action).board;
+      const nb = core.cloneBoard(board);
+      const [fx, fy] = h.action.from, [tx, ty] = h.action.to;
+      const piece = nb[fx] && nb[fx][fy];
+      if (piece) {
+        nb[fx][fy] = null;
+        nb[tx][ty] = piece;
+        for (const c of (h.captured || [])) if (c && Number.isInteger(c.x) && Number.isInteger(c.y)) nb[c.x][c.y] = null;
+      }
+      board = nb;
     }
     frames.push({ board: core.cloneBoard(board), step: h });
   }

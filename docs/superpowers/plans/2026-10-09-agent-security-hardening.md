@@ -50,6 +50,7 @@
 - `games/clawclash/index.js`、`games/darkchess/index.js`：调整父进程 limits，并保留游戏挑战局数契约。
 - `games/clawclash/server.js`、`games/darkchess/server.js`：回放 JSON 入口的类型/结构边界；不在服务器中执行未经校验的棋谱；公共详情 DTO 脱敏。
 - `platform/routes_game.js`：公共玩家/回放路由的字段暴露边界，以及头像上传和 rotate-key 路径的安全契约。
+- `platform/public_replay.js`：两款棋类公共回放的显式、脱敏 DTO 和 history 快照构造。
 - `server.js`：统一 CORS、缓存和头像校验入口；只在本地代码确实负责的范围内补安全回归。
 - `platform/execpool.js`、`platform/runner.js`：用户代码 runner 的 Node permission、读目录白名单、降权、网络出口和 worker 回收审计。
 - `games/clawclash/public/app.js`：钳王棋谱文本渲染转义；暗棋现有 `esc()` 用法保持并补查遗漏点。
@@ -383,7 +384,7 @@ Expected: valid replay still renders; sensitive database fields are absent; unfi
 
 - [ ] **Step 6: Commit**
 
-Run: `git add games/clawclash/server.js games/darkchess/server.js platform/routes_game.js test/replay-security.test.js test/security-assessment.test.js test/api.e2e.test.js; git commit -m "fix: redact public replay metadata"`
+Run: `git add games/clawclash/server.js games/darkchess/server.js platform/public_replay.js platform/routes_game.js test/replay-security.test.js test/security-assessment.test.js test/api.e2e.test.js; git commit -m "fix: redact public replay metadata"`
 
 ### Task 8A: 核对暗棋随机流隔离，暂不按报告盲改
 
@@ -594,7 +595,7 @@ Create or update a dated implementation/deployment report under `GameDesign/` on
 
 ## Plan Self-Review
 
-- **Spec coverage:** N1、N2、N3、N4、N5 分别由 Tasks 9、6–8、5、2–4、5 与 limits 复核覆盖；P0-1/2/3、P1、P2 和部署要求均有对应任务。
+- **Spec coverage:** N1、N2、N3、N4、N5 分别由 Tasks 9、6–8、5、2–4、5 与 limits 复核覆盖；P0-1/2/3、P1、P2 和部署要求均有对应任务；公共回放 DTO 由 `platform/public_replay.js` 统一构造。
 - **Security-report reconciliation:** 报告 P0-2 的历史回放字段泄露已新增 Task 8；报告 P0-1 已按当前代码降级为需版本核对的审计项；P1-1 沙箱、P1-2 上传、P1-4 账号、P1-6 XSS 和 P2 安全头均有独立核查边界。
 - **Correction coverage:** 计划没有采用“判定发生在脚本前”“冻结外层对象即可”“JSON 净化即可隔离”“整场共享时钟必然等于每局预算”等已被复核文档纠正的说法。
 - **Type consistency:** 钳王 canonical move 为 `{from,to}`；暗棋 canonical action 为 `{action:'flip',at}` 或 `{action:'move',from,to}`；两者均由引擎合法列表提供最终执行对象。

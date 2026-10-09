@@ -11,6 +11,7 @@ const manifest = require('./index');
 const { initBoard } = require('./engine/engine_quota');
 const { runPlay: runPlaySession } = require('./engine/play_session');
 const { findBuiltin } = require('./engine/builtins');
+const { publicClawHistory } = require('../../platform/public_replay');
 
 // ---- 统一数据层（P3）：平台通用读写全部来自 gameStore ----
 // 同 RP 次级排序用内部 ELO（rating）——钳王独有；listBattles 额外附挂每场的两局明细。
@@ -158,14 +159,29 @@ function opponentMatches(target, url) {
   };
 }
 
-// 对局回放详情（公开）
+// 对局回放详情（公开）：显式构造 DTO，不把数据库整行暴露给客户端。
 function matchDetail(urlId) {
   const row = stmtGetMatch.get(urlId);
   if (!row) return null;
   const gameJson = JSON.parse(row.game_json);
   const chBot = store.getById(row.challenger_bot_id);
   const cdBot = store.getById(row.challenged_bot_id);
-  return { ok: true, ...row, game_json: undefined, gameData: gameJson, challengerName: chBot?.name, challengedName: cdBot?.name, challengerAvatar: chBot?.avatar, challengedAvatar: cdBot?.avatar };
+  return {
+    ok: true,
+    matchUrlId: row.match_url_id,
+    winner: row.winner,
+    reason: row.reason,
+    turns: row.turns,
+    finalChallengerPieces: row.final_challenger_pieces,
+    finalChallengedPieces: row.final_challenged_pieces,
+    challengerSide: row.challenger_side,
+    gameNo: row.game_no,
+    gameData: { initialBoard: gameJson.initialBoard, history: publicClawHistory(gameJson.history) },
+    challengerName: chBot?.name,
+    challengedName: cdBot?.name,
+    challengerAvatar: chBot?.avatar,
+    challengedAvatar: cdBot?.avatar,
+  };
 }
 
 // ---- 正式挑战（§7/§8）：双局制（执黑/执红各 1），双局合计定胜负 ----

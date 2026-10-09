@@ -357,7 +357,7 @@ function moveLiHtml(h,i){
   const icon=`<span class="mv-side">${tokenSvg(h.side)}</span>`;
   if(h.pass)return `<span class="mv-no">${i+1}</span>${icon}<span class="mv-pass">停一手</span>`;
   const cap=h.captured.length?`<span class="mv-cap">吃${h.captured.length}</span>`:'';
-  return `<span class="mv-no">${i+1}</span>${icon}<span>(${h.from})→(${h.to})</span>${cap}`;
+  return `<span class="mv-no">${i+1}</span>${icon}<span>(${esc(h.from)})→(${esc(h.to)})</span>${cap}`;
 }
 
 // ============================================================

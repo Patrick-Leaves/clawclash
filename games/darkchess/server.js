@@ -12,6 +12,7 @@ const { runPlay: runPlaySession } = require('./engine/play_session');
 const { findBuiltin } = require('./engine/builtins');
 const { TRAINING_BOTS } = require('./engine/training_bots');
 const { makeBot } = require('./engine/sandbox');
+const { publicDarkBoard, publicDarkHistory } = require('../../platform/public_replay');
 
 // ---- 统一数据层（P3）：平台通用读写全部来自 gameStore；同 RP 次级排序按创建先后（默认） ----
 const core = db.gameStore(manifest.id, {});
@@ -146,13 +147,19 @@ function matchDetail(urlId) {
   if (!row) return null;
   const ch = store.getById(row.challenger_player_id);
   const cd = store.getById(row.challenged_player_id);
+  const gameData = JSON.parse(row.game_json);
   return {
-    ok: true, ...row,
-    game_json: undefined, initial_layout: undefined,
-    initialBoard: JSON.parse(row.initial_layout),
-    gameData: JSON.parse(row.game_json),
-    challengerName: ch?.name, challengedName: cd?.name,
-    challengerAvatar: ch?.avatar, challengedAvatar: cd?.avatar,
+    ok: true,
+    matchUrlId: row.match_url_id,
+    winner: row.winner,
+    reason: row.reason,
+    turns: row.turns,
+    initialBoard: publicDarkBoard(JSON.parse(row.initial_layout)),
+    gameData: { history: publicDarkHistory(gameData.history) },
+    challengerName: ch?.name,
+    challengedName: cd?.name,
+    challengerAvatar: ch?.avatar,
+    challengedAvatar: cd?.avatar,
   };
 }
 

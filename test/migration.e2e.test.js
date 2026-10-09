@@ -270,6 +270,9 @@ test('P3 迁移：旧双表族库 → 统一表族，数据经 API 全量验证'
     assert.equal(m.json.winner, 'challenger');
     assert.equal(m.json.challengerName, '老甲');
     assert.ok(Array.isArray(m.json.gameData.history));
+    for (const field of ['seed', 'battle_id', 'challenger_player_id', 'challenged_player_id', 'ch_code_hash', 'cd_code_hash', 'game_json', 'initial_layout']) {
+      assert.equal(Object.prototype.hasOwnProperty.call(m.json, field), false, `迁移后的公开回放不应暴露 ${field}`);
+    }
   });
 
   await t.test('囚徒战报：blob 选择序列逐位一致（含中途判负的截断解码）', async () => {

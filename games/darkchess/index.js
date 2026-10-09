@@ -48,9 +48,9 @@ module.exports = {
   // ---- runner 子进程任务（执行不可信代码；键 = execpool.run 的 kind）----
   // limits: 各任务的父进程硬超时（超时 SIGKILL 子进程）
   limits: {
-    smoke: 90000,     // 烟雾 6 局
-    challenge: 20000, // 正式挑战：单场制，1 局
-    play: 20000,      // 试玩单请求推进若干手
+    smoke: 150000,    // 烟雾 6 局（每局双方各 10s）+ 编译/进程余量
+    challenge: 30000, // 正式挑战：单场制，1 局（双方各 10s）+ 编译/进程余量
+    play: 30000,      // 试玩单请求推进若干手
   },
   tasks: {
     smoke: (t) => runSmokeTests(t.code),
