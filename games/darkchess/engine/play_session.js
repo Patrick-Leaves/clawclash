@@ -58,7 +58,7 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     } else {
       const ok = h.action && actions.some((a) => actionsEqual(a, h.action));
       if (!ok) return { ok: false, status: 400, error: `第 ${matchState.turnNumber} 手动作非法` };
-      status = stepAction(matchState, matchState.turnSeat, actions.find((a) => actionsEqual(a, h.action))); 
+      status = stepAction(matchState, matchState.turnSeat, actions.find((a) => actionsEqual(a, h.action)));
     }
   }
 
@@ -73,7 +73,7 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     catch { status = { over: true, winner: humanSeat, reason: 'error' }; break; }
     const ok = action && actions.some((a) => actionsEqual(a, action));
     if (!ok) { status = { over: true, winner: humanSeat, reason: 'illegal' }; break; }
-    status = stepAction(matchState, matchState.turnSeat, actions.find((a) => actionsEqual(a, action))); 
+    status = stepAction(matchState, matchState.turnSeat, actions.find((a) => actionsEqual(a, action)));
   }
 
   const toMoveSeat = status ? null : (local ? matchState.turnSeat : humanSeat);
@@ -83,7 +83,12 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     payload: {
       ok: true, mode: local ? 'local' : 'vs', opponent: oppName, seed,
       humanSeat, botSeat, toMoveSeat, phase: matchState.phase, colorOf: matchState.colorOf,
-      board: fogBoard(matchState.board), history: matchState.history,
+      board: fogBoard(matchState.board), history: matchState.history.map((h) => ({
+        ...h,
+        action: h.action ? (h.action.action === 'flip' ? { action: 'flip', at: h.action.at.slice() } : { action: 'move', from: h.action.from.slice(), to: h.action.to.slice() }) : null,
+        captured: h.captured.map((c) => ({ ...c })),
+        revealed: h.revealed ? { ...h.revealed } : null,
+      })),
       counts: core.counts(matchState.board), noCaptureCount: matchState.noCaptureCount,
       legalActions,
       status: status ? { over: true, winner: status.winner, reason: status.reason, turns: matchState.history.length } : { over: false, turns: matchState.history.length },

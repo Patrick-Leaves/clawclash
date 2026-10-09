@@ -3,6 +3,15 @@
 // 重放校验完全由本端重算（不信任客户端附带的吃子/pass 字段）。不入库、不计分。
 const { initBoard, mulberry32, piecesOf } = require('./engine_quota');
 const { Rules, makeRules } = require('./rules_metered');
+function cloneHistory(history) {
+  return history.map((h) => ({
+    turn: h.turn, side: h.side,
+    from: h.from ? h.from.slice() : null,
+    to: h.to ? h.to.slice() : null,
+    captured: Array.isArray(h.captured) ? h.captured.map((p) => p.slice()) : [],
+    pass: !!h.pass,
+  }));
+}
 
 // spec: { mode, humanSide, history, opponent }
 //   opponent: { kind:'bot', code, name } | { kind:'builtin', name } | null(local)
@@ -86,7 +95,7 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     const game = {
       board: Rules.clone(board), turnNumber: turn, noCaptureMoves: ncm,
       legalMoves: moves.map((m) => ({ from: m.from.slice(), to: m.to.slice() })),
-      history, random: mulberry32((0x5EED ^ (turn * 2654435761)) >>> 0),
+      history: cloneHistory(history), random: mulberry32((0x5EED ^ (turn * 2654435761)) >>> 0),
       rules: makeRules(100),
     };
     let mv;
@@ -108,7 +117,7 @@ function runPlay(spec, { makeBot, findBuiltin }) {
     ok: true,
     payload: {
       ok: true, mode: local ? 'local' : 'vs', opponent: oppName, humanSide, botSide, toMove,
-      initialBoard: initBoard(), history, board, counts: Rules._counts(board),
+      initialBoard: initBoard(), history: cloneHistory(history), board: Rules.clone(board), counts: Rules._counts(board),
       legalMoves: legal,
       status: status ? { over: true, winner: status.winner, reason: status.reason, turns: history.length } : { over: false, turns: history.length },
     },
