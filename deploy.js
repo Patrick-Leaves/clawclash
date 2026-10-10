@@ -169,6 +169,7 @@ function makeRollbackTar() {
   rollbackTar = path.join(BACKUP_DIR, `code-rollback-${stamp()}.tar.gz`);
 
   const args = [
+    '--force-local', // 防御：路径含冒号时（仅测试环境）不要误判为远程主机
     '-czf', rollbackTar, '-C', APP_DIR,
     '--exclude=./sixchess.db',
     '--exclude=./sixchess.db-wal',
@@ -185,7 +186,7 @@ function makeRollbackTar() {
   if (!r.ok) abort('打包回退包失败: ' + r.stderr);
 
   // 自检：回退包必须含 server.js，且绝不含数据库/密钥/头像
-  const l = run('tar', ['-tzf', rollbackTar]);
+  const l = run('tar', ['--force-local', '-tzf', rollbackTar]);
   if (!l.ok) abort('回退包无法读取，已停止。');
   const names = l.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const problems = [];
@@ -296,7 +297,7 @@ async function rollback(reason) {
   if (DRY) { log('[演练] 跳过回退'); return false; }
   try {
     run('pm2', ['stop', PM2_NAME]);
-    const r = run('tar', ['-xzf', rollbackTar, '-C', APP_DIR]);
+    const r = run('tar', ['--force-local', '-xzf', rollbackTar, '-C', APP_DIR]);
     if (!r.ok) throw new Error('解包回退包失败: ' + r.stderr);
     const s = run('pm2', ['startOrRestart', 'ecosystem.config.js'], { cwd: APP_DIR });
     if (!s.ok) throw new Error('回退后启动失败: ' + (s.stderr || s.stdout));
