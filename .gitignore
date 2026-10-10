@@ -14,3 +14,6 @@ ecosystem.config.js
 
 # smtp-check.js 的本地凭据文件（含邮箱授权码），仅本机使用
 smtp-local.json
+
+# 本地打出的部署代码包（上传服务器用，不入库）
+clawclash-deploy-*.zip
