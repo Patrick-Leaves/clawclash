@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Rules } = require('../games/clawclash/engine/rules_metered');
 const darkRules = require('../games/darkchess/engine/rules_core');
+const { fogBoard } = require('../games/darkchess/engine/engine');
 
 function emptyBoard() { return Array.from({ length: 4 }, () => Array(4).fill(null)); }
 function put(board, cells, side) { for (const [x, y] of cells) board[x][y] = side; }
@@ -32,5 +33,5 @@ test('clawclash guide vector: 20 non-capture steps use material result', () => {
 
 test('darkchess guide vector: masked judge is inconclusive', () => {
   const board = darkRules.initBoard(() => 0.5);
-  assert.equal(darkRules.judge(board, 0), null);
+  assert.equal(darkRules.judge(fogBoard(board), 0), null);
 });

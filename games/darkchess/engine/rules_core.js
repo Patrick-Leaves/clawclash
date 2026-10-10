@@ -191,7 +191,9 @@ function judgeByValue(board) {
 }
 // 终局裁定（规则 §12）：吃光判负优先；连续 ncm 回合无吃子达阈值按子力价值判定（不是直接判和）。
 function judge(board, ncm) {
-  if (countHidden(board) > 0) return null;
+  // 暗子在真实棋盘中仍带身份；只有身份不完整的遮罩局面无法可靠裁定。
+  if (board.some((col) => col.some((cell) => cell &&
+    ((cell.side !== 'black' && cell.side !== 'red') || !Number.isFinite(cell.power))))) return null;
   const c = counts(board);
   if (c.black === 0) return { winner: 'red', reason: 'eliminated' };
   if (c.red === 0) return { winner: 'black', reason: 'eliminated' };

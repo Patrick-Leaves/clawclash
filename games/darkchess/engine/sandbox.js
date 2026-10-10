@@ -7,6 +7,7 @@
 //   2) 不向沙箱注入宿主内置对象（Math/JSON/… 用上下文自带版本），收敛最易用的逃逸面。
 // 生产部署必须叠加 OS 级隔离（独立低权限进程/容器、只读 FS、禁网、密钥与 DB 不可达）。详见 SECURITY.md。
 const vm = require('vm');
+const { WIDTH, HEIGHT } = require('./rules_core');
 
 const COMPILE_TIMEOUT_MS = 2000; // 顶层代码（定义 onTurn）最长运行时间
 const MOVE_TIMEOUT_MS = 3000;    // 单次 onTurn 调用最长挂钟时间
@@ -42,7 +43,7 @@ function makeBot(code) {
       const coord = (v) => {
         if (!Array.isArray(v) || v.length < 2) return null;
         const x = v[0], y = v[1];
-        return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && x < 4 && y >= 0 && y < 4 ? [x, y] : null;
+        return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && x < ${WIDTH} && y >= 0 && y < ${HEIGHT} ? [x, y] : null;
       };
       if (!value || typeof value !== 'object') return null;
       if (value.action === 'flip') {
@@ -58,10 +59,11 @@ function makeBot(code) {
   `, { filename: 'invoke.js' });
   const bot = {
     name: 'user',
-    onTurn(me, opponent, game) {
+    onTurn(me, opponent, game, timeoutMs = MOVE_TIMEOUT_MS) {
       ctx.__me = me; ctx.__opp = opponent; ctx.__game = game;
       try {
-        const value = invoker.runInContext(ctx, { timeout: MOVE_TIMEOUT_MS });
+        const timeout = Math.max(1, Math.floor(Math.min(MOVE_TIMEOUT_MS, timeoutMs)));
+        const value = invoker.runInContext(ctx, { timeout });
         if (!value) return null;
         if (value.action === 'flip') return { action: 'flip', at: [value.at[0], value.at[1]] };
         return { action: 'move', from: [value.from[0], value.from[1]], to: [value.to[0], value.to[1]] };

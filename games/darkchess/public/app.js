@@ -295,8 +295,9 @@ function dqBuildReplayFrames(initialBoard, history) {
       const piece = nb[fx] && nb[fx][fy];
       if (piece) {
         nb[fx][fy] = null;
-        nb[tx][ty] = piece;
         for (const c of (h.captured || [])) if (c && Number.isInteger(c.x) && Number.isInteger(c.y)) nb[c.x][c.y] = null;
+        // 同归于尽会记录起点被吃；其余吃子在清掉目标后保留攻击子。
+        if (!(h.captured || []).some((c) => c && c.x === fx && c.y === fy)) nb[tx][ty] = piece;
       }
       board = nb;
     }

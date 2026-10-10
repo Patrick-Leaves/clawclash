@@ -129,7 +129,7 @@ function buildView(matchState, seat) {
     rules: {
       legalMoves: core.legalMoves,
       apply: (board, side2, action) => core.applyMove(board, side2, { from: action.from, to: action.to }),
-      judge: core.judge,
+      judge: (board, ncm) => core.countHidden(board) > 0 ? null : core.judge(board, ncm),
       clone: core.cloneBoard,
       other: core.other,
       pieceValue: (kind) => core.KIND_POWER[kind],
@@ -196,8 +196,8 @@ function finFrom(matchState, winner, reason) {
 }
 
 // bots = { a: {onTurn}, b: {onTurn} }
-// 单场挂钟上限（安全阀，防「每手不超时但整体长拖」）。超时则中止，由该走方判 runtime 负。
-function playMatch(bots, seed, maxMatchMs = 15000, options = {}) {
+// 双方计算时间独立计费；任务总耗时由父进程限制。显式 maxMatchMs 仅中止任务，不判某方负。
+function playMatch(bots, seed, maxMatchMs = Infinity, options = {}) {
   const now = options.now || Date.now;
   const perSideBudgetMs = options.perSideBudgetMs ?? 10000;
   const matchState = initMatchState(seed);
@@ -205,7 +205,11 @@ function playMatch(bots, seed, maxMatchMs = 15000, options = {}) {
   const deadline = now() + maxMatchMs;
 
   while (true) {
-    if (now() > deadline) return finFrom(matchState, otherSeat(matchState.turnSeat), 'runtime');
+    if (now() > deadline) {
+      const error = new Error('Match wall-clock limit exceeded');
+      error.code = 'MATCH_TIMEOUT';
+      throw error;
+    }
     const seat = matchState.turnSeat;
     const actions = legalActionsForSeat(matchState, seat);
 
@@ -219,7 +223,7 @@ function playMatch(bots, seed, maxMatchMs = 15000, options = {}) {
     let action;
     const startedAt = now();
     try {
-      action = bots[seat].onTurn(view.me, view.opponent, view.game);
+      action = bots[seat].onTurn(view.me, view.opponent, view.game, Math.min(3000, remaining[seat]));
     } catch (e) {
       remaining[seat] -= Math.max(0, now() - startedAt);
       return finFrom(matchState, otherSeat(seat), e && e.timeout ? 'runtime' : 'error');

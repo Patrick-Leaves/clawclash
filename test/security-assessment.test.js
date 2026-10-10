@@ -18,7 +18,7 @@ test('darkchess opening RNG is separate from each exposed seat RNG', () => {
 
 test('masked darkchess judge does not infer hidden pieces as red', () => {
   const board = darkRules.initBoard(() => 0.5);
-  const masked = darkRules.cloneBoard(board);
+  const masked = darkEngine.fogBoard(board);
   const result = darkRules.judge(masked, 0);
   assert.equal(result, null);
 });

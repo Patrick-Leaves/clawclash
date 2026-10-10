@@ -57,11 +57,12 @@ function makeBot(code) {
   `, { filename: 'invoke.js' });
   const bot = {
     name: 'user',
-    onTurn(me, opponent, game) {
+    onTurn(me, opponent, game, timeoutMs = MOVE_TIMEOUT_MS) {
       ctx.Rules = game.rules; // 本手计量实例（每手开始替换占位）
       ctx.__me = me; ctx.__opp = opponent; ctx.__game = game;
       try {
-        const value = invoker.runInContext(ctx, { timeout: MOVE_TIMEOUT_MS });
+        const timeout = Math.max(1, Math.floor(Math.min(MOVE_TIMEOUT_MS, timeoutMs)));
+        const value = invoker.runInContext(ctx, { timeout });
         if (!value) return null;
         return { from: [value.from[0], value.from[1]], to: [value.to[0], value.to[1]] };
       } catch (e) {

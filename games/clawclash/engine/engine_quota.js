@@ -41,9 +41,8 @@ function deriveRng(seed) {
 }
 
 // bots = { black: bot, red: bot }
-// maxMatchMs：单场挂钟上限（安全阀，防"每手不超时但整体长拖"的慢速消耗）。
-// 超时则中止，由"该走方"判 runtime 负——正常对局远达不到此值。
-function playMatch(bots, seed, budget, maxMatchMs = 10000, options = {}) {
+// 双方计算时间独立计费；任务总耗时由父进程限制。显式 maxMatchMs 仅中止任务，不判某方负。
+function playMatch(bots, seed, budget, maxMatchMs = Infinity, options = {}) {
   const now = options.now || Date.now;
   const perSideBudgetMs = options.perSideBudgetMs ?? 10000;
   const rng = deriveRng(seed);
@@ -58,7 +57,11 @@ function playMatch(bots, seed, budget, maxMatchMs = 10000, options = {}) {
   });
 
   while (true) {
-    if (now() > deadline) return fin(Rules.other(side), 'runtime'); // 单场超时：该走方判负
+    if (now() > deadline) {
+      const error = new Error('Match wall-clock limit exceeded');
+      error.code = 'MATCH_TIMEOUT';
+      throw error;
+    }
     const moves = Rules.legalMoves(board, side);
 
     if (moves.length === 0) { // 停一手:引擎自动 pass,不调用 onTurn
@@ -94,7 +97,7 @@ function playMatch(bots, seed, budget, maxMatchMs = 10000, options = {}) {
     let mv;
     const startedAt = now();
     try {
-      mv = bots[side].onTurn(me, opponent, game);
+      mv = bots[side].onTurn(me, opponent, game, Math.min(3000, remaining[side]));
     } catch (e) {
       remaining[side] -= Math.max(0, now() - startedAt);
       return fin(oppSide, e && e.quota ? 'runtime' : 'error');
