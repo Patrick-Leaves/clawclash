@@ -32,7 +32,10 @@ const BACKUP_DIR = process.env.CC_BACKUP_DIR || '/root/backup';
 const PM2_NAME = 'clawclash';
 const HEALTH_URL = 'http://127.0.0.1:3000/api/games';
 const GUIDE_URL = 'http://127.0.0.1:3000/games/darkchess/agent-guide';
-const GUIDE_MARKER = '各有约 10 秒'; // 只有新版本指南含这句话，用于确认新代码真的在跑
+// 只有新版本指南含这句话，用于确认新代码真的在跑。
+// 以后若指南措辞变化：不改代码也可用环境变量覆盖（CC_GUIDE_MARKER='新的句子' node deploy.js 包.zip），
+// 或直接把下面的默认值更新为当次新增的稳定短语。
+const GUIDE_MARKER = process.env.CC_GUIDE_MARKER || '各有约 10 秒';
 
 let stopped = false; // 是否已进入停服窗口（决定失败时是否自动回退）
 let rollbackTar = '';
